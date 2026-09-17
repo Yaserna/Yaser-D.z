@@ -183,6 +183,7 @@ class HiddenConversationActivity : BaseActivity() {
     override fun onResume() {
         super.onResume()
         resumedNow = true
+        activeNormalizedAddress = if (address.isNotEmpty()) SecureStore.normalize(address) else null
         // Opening the conversation clears its unread state and removes its decoy notification.
         hiddenDb.markRead(address)
         Notifier.cancelDecoy(this, address)
@@ -191,6 +192,7 @@ class HiddenConversationActivity : BaseActivity() {
     override fun onPause() {
         super.onPause()
         resumedNow = false
+        activeNormalizedAddress = null
         // Keep whatever is typed as a draft so it isn't lost on back/exit.
         if (address.isNotEmpty()) SecureStore(this).setDraft(address, binding.input.text.toString())
     }
@@ -326,5 +328,10 @@ class HiddenConversationActivity : BaseActivity() {
             @Suppress("DEPRECATION")
             if (subId >= 0) SmsManager.getSmsManagerForSubscriptionId(subId) else SmsManager.getDefault()
         }
+    }
+
+    companion object {
+        @Volatile
+        var activeNormalizedAddress: String? = null
     }
 }

@@ -25,14 +25,20 @@ class SmsReceiver : BroadcastReceiver() {
         }
         val text = body.toString()
 
-        val subId = intent.getIntExtra("subscription", -1)
+        val subId = listOf("subscription", "android.telephony.extra.SUBSCRIPTION_INDEX", "subscription_index", "sub_id").firstNotNullOfOrNull { key -> intent.getIntExtra(key, -1).takeIf { it >= 0 } } ?: -1
 
         val secure = SecureStore(context)
         if (secure.isHidden(address)) {
             // Hidden sender: store privately, never touch the system store,
             // and show only the decoy notification.
             HiddenDbHelper(context).insert(address, text, date, INBOX, subId)
-            Notifier.showDecoy(context, secure, address)
+            if (SecureStore.normalize(address) ==
+                com.privatemsg.app.ui.HiddenConversationActivity.activeNormalizedAddress
+            ) {
+                Notifier.vibrateTiny(context)
+            } else {
+                Notifier.showDecoy(context, secure, address)
+            }
             // Tell an open hidden conversation to reload, so the new message shows live.
             context.sendBroadcast(
                 Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(context.packageName)
