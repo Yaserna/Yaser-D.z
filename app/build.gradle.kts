@@ -14,8 +14,8 @@ android {
         // Auto-bump per CI build so every release is a distinct, newer version
         // (the phone always sees it as an update; the number shows in Settings).
         val ciRun = (System.getenv("GITHUB_RUN_NUMBER") ?: "0").toIntOrNull() ?: 0
-        versionCode = 10 + ciRun
-        versionName = "1.2.8"
+        versionCode = 11 + ciRun
+        versionName = "1.2.9"
     }
 
     buildFeatures {

@@ -117,7 +117,9 @@ class SmsRepository(private val context: Context) {
 
     /** Stores the sent message and returns its row Uri (for status updates). */
     fun storeSentMessage(address: String, body: String, subId: Int): android.net.Uri? {
+        val threadId = Telephony.Threads.getOrCreateThreadId(context, address)
         val values = ContentValues().apply {
+            put(Telephony.Sms.THREAD_ID, threadId)
             put(Telephony.Sms.ADDRESS, address)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, System.currentTimeMillis())
@@ -126,7 +128,9 @@ class SmsRepository(private val context: Context) {
             put(Telephony.Sms.STATUS, Telephony.Sms.STATUS_NONE)
             if (subId >= 0) put(Telephony.Sms.SUBSCRIPTION_ID, subId)
         }
-        return context.contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)
+        val uri = context.contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)
+        context.contentResolver.notifyChange(Telephony.Sms.CONTENT_URI, null)
+        return uri
     }
 
     /**

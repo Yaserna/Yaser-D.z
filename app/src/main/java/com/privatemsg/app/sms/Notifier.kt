@@ -1,4 +1,4 @@
-package com.privatemsg.app.sms
+﻿package com.privatemsg.app.sms
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -71,7 +71,7 @@ object Notifier {
         } catch (_: SecurityException) {}
     }
 
-    fun showIncoming(context: Context, address: String, body: String, messageId: Long) {
+    fun showIncoming(context: Context, address: String, body: String, messageId: Long, subId: Int = -1) {
         if (SecureStore(context).isMuted(address)) {
             return
         }
@@ -97,6 +97,7 @@ object Notifier {
                 putExtra("thread_id", threadId)
                 putExtra("message_id", messageId)
                 putExtra("notif_id", notifId)
+                putExtra("sub_id", subId)
             }
 
         val replyOpenIntent = Intent(context, com.privatemsg.app.ui.QuickReplyActivity::class.java).apply {
@@ -104,6 +105,7 @@ object Notifier {
             putExtra("address", address)
             putExtra("thread_id", threadId)
             putExtra("notif_id", notifId)
+                putExtra("sub_id", subId)
         }
         val replyPi = PendingIntent.getActivity(
             context, notifId * 31 + 1, replyOpenIntent,

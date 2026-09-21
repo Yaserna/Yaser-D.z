@@ -61,7 +61,7 @@ class SmsReceiver : BroadcastReceiver() {
                             Notifier.vibrateTiny(context)
                             repo.markThreadRead(msgThreadId)
                         } else if (!secure.isMuted(rawAddress)) {
-                            Notifier.showIncoming(context, rawAddress, body, msgId)
+                            Notifier.showIncoming(context, rawAddress, body, msgId, subId)
                             Notifier.vibrateTiny(context)
                         }
                         return@execute
@@ -103,7 +103,7 @@ class SmsReceiver : BroadcastReceiver() {
                         Notifier.vibrateTiny(context)
                         repo.markThreadRead(msgThreadId)
                     } else if (!secure.isMuted(rawAddress)) {
-                        Notifier.showIncoming(context, rawAddress, body, msgId)
+                        Notifier.showIncoming(context, rawAddress, body, msgId, subId)
                         Notifier.vibrateTiny(context)
                     }
                 }
