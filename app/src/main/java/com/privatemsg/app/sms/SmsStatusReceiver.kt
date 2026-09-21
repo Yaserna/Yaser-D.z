@@ -1,4 +1,4 @@
-package com.privatemsg.app.sms
+﻿package com.privatemsg.app.sms
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -60,6 +60,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
         const val ACTION_DELIVERED = "com.privatemsg.app.SMS_DELIVERED"
         const val ACTION_HIDDEN_DELIVERED = "com.privatemsg.app.HIDDEN_SMS_DELIVERED"
         const val ACTION_HIDDEN_REFRESH = "com.privatemsg.app.HIDDEN_SMS_REFRESH"
+        const val ACTION_SMS_REFRESH = "com.privatemsg.app.SMS_REFRESH"
         const val EXTRA_HIDDEN_ID = "hidden_id"
     }
 }

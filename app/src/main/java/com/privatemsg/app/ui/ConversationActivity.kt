@@ -5,7 +5,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.Manifest
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
@@ -46,6 +48,8 @@ class ConversationActivity : BaseActivity() {
         /** Normalized address of the conversation currently open on screen (or null). */
         @Volatile
         var activeNormalizedAddress: String? = null
+        @Volatile
+        var activeThreadId: Long = -1L
     }
 
     private fun setupRecipientAutocomplete() {
@@ -251,6 +255,20 @@ class ConversationActivity : BaseActivity() {
         contentResolver.registerContentObserver(
             android.provider.Telephony.Sms.CONTENT_URI, true, smsObserver
         )
+        ContextCompat.registerReceiver(
+            this, refreshReceiver,
+            IntentFilter(SmsStatusReceiver.ACTION_SMS_REFRESH),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    private val refreshReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            if (threadId > 0) {
+                repo.markThreadRead(threadId)
+                loadMessages()
+            }
+        }
     }
 
     private val smsObserver = object : android.database.ContentObserver(
@@ -269,6 +287,7 @@ class ConversationActivity : BaseActivity() {
         super.onResume()
         // Mark this conversation as the one currently open, so a new message from it
         // shows live here (with a tiny vibration) instead of posting a notification.
+        activeThreadId = threadId
         activeNormalizedAddress =
             if (address.isNotEmpty()) SecureStore.normalize(address) else null
         // Opening the conversation clears its notification (so it doesn't linger).
@@ -285,6 +304,7 @@ class ConversationActivity : BaseActivity() {
 
     override fun onPause() {
         super.onPause()
+        activeThreadId = -1L
         activeNormalizedAddress = null
         // Keep whatever is typed as a draft so it isn't lost on back/exit.
         if (address.isNotEmpty()) SecureStore(this).setDraft(address, binding.input.text.toString())
@@ -293,6 +313,7 @@ class ConversationActivity : BaseActivity() {
     override fun onDestroy() {
         super.onDestroy()
         contentResolver.unregisterContentObserver(smsObserver)
+        try { unregisterReceiver(refreshReceiver) } catch (_: Exception) {}
     }
 
     private fun setupSim() {

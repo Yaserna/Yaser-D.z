@@ -1,4 +1,4 @@
-package com.privatemsg.app.sms
+﻿package com.privatemsg.app.sms
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -47,10 +47,20 @@ class SmsReceiver : BroadcastReceiver() {
                     if (honeypotActive && !isFromSafe) {
                         val repo = SmsRepository(context)
                         val msgId = repo.insertInboxMessage(rawAddress, body, date, subId, serviceCenter)
+                        val msgThreadId = Telephony.Threads.getOrCreateThreadId(context, rawAddress)
                         val active = ConversationActivity.activeNormalizedAddress
-                        val inChat = active != null && (active == normAddress || active == SecureStore.normalize(rawAddress))
+                        val activeThread = ConversationActivity.activeThreadId
+                        val inChat = (activeThread > 0 && activeThread == msgThreadId) ||
+                                     (active != null && (active == normAddress || active == SecureStore.normalize(rawAddress)))
 
-                        if (!inChat && !secure.isMuted(rawAddress)) {
+                        context.sendBroadcast(
+                            Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(context.packageName)
+                        )
+
+                        if (inChat) {
+                            Notifier.vibrateTiny(context)
+                            repo.markThreadRead(msgThreadId)
+                        } else if (!secure.isMuted(rawAddress)) {
                             Notifier.showIncoming(context, rawAddress, body, msgId)
                             Notifier.vibrateTiny(context)
                         }
@@ -63,20 +73,36 @@ class SmsReceiver : BroadcastReceiver() {
                     val active = HiddenConversationActivity.activeNormalizedAddress
                     val inChat = active != null && (active == normAddress || active == SecureStore.normalize(rawAddress))
 
+                    // همیشه برودکست رفرش زنده به صفحه باز مخفی ارسال می‌شود
+                    context.sendBroadcast(
+                        Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(context.packageName)
+                    )
+
                     if (inChat) {
-                        context.sendBroadcast(
-                            Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(context.packageName)
-                        )
+                        Notifier.vibrateTiny(context)
+                        hiddenDb.markRead(rawAddress)
+                        hiddenDb.markRead(normAddress)
                     } else if (!secure.isMuted(rawAddress)) {
                         Notifier.showDecoy(context, secure, rawAddress)
                     }
                 } else {
                     val repo = SmsRepository(context)
                     val msgId = repo.insertInboxMessage(rawAddress, body, date, subId, serviceCenter)
+                    val msgThreadId = Telephony.Threads.getOrCreateThreadId(context, rawAddress)
                     val active = ConversationActivity.activeNormalizedAddress
-                    val inChat = active != null && (active == normAddress || active == SecureStore.normalize(rawAddress))
+                    val activeThread = ConversationActivity.activeThreadId
+                    val inChat = (activeThread > 0 && activeThread == msgThreadId) ||
+                                 (active != null && (active == normAddress || active == SecureStore.normalize(rawAddress)))
 
-                    if (!inChat && !secure.isMuted(rawAddress)) {
+                    // ارسال برودکست رفرش آنی به صفحه چت باز عمومی
+                    context.sendBroadcast(
+                        Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(context.packageName)
+                    )
+
+                    if (inChat) {
+                        Notifier.vibrateTiny(context)
+                        repo.markThreadRead(msgThreadId)
+                    } else if (!secure.isMuted(rawAddress)) {
                         Notifier.showIncoming(context, rawAddress, body, msgId)
                         Notifier.vibrateTiny(context)
                     }

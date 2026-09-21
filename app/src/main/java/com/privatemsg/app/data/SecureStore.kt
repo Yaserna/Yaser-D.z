@@ -1,4 +1,4 @@
-package com.privatemsg.app.data
+﻿package com.privatemsg.app.data
 
 import android.content.Context
 import java.security.MessageDigest
@@ -306,13 +306,19 @@ class SecureStore(context: Context) {
         const val DEFAULT_RECEIVED_COLOR = 0xFF2C2C2E.toInt()
 
         fun normalize(address: String): String {
-            val trimmed = address.trim()
-            val digits = trimmed.filter { it.isDigit() }
-            val nonDigitNonSep = trimmed.count { !it.isDigit() && it !in "+-() " }
+            val latin = address.map { ch ->
+                when (ch) {
+                    in '۰'..'۹' -> ('0'.code + (ch - '۰')).toChar()
+                    in '٠'..'٩' -> ('0'.code + (ch - '٠')).toChar()
+                    else -> ch
+                }
+            }.joinToString("").trim()
+            val digits = latin.filter { it in '0'..'9' }
+            val nonDigitNonSep = latin.count { it !in '0'..'9' && it !in "+-() " }
             return if (nonDigitNonSep == 0 && digits.length >= 7) {
                 digits.takeLast(10)
             } else {
-                trimmed.lowercase()
+                latin.lowercase()
             }
         }
 

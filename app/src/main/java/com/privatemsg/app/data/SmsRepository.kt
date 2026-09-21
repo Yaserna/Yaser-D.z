@@ -208,7 +208,9 @@ class SmsRepository(private val context: Context) {
         subId: Int = -1,
         serviceCenter: String = ""
     ): Long {
+        val threadId = Telephony.Threads.getOrCreateThreadId(context, address)
         val values = ContentValues().apply {
+            put(Telephony.Sms.THREAD_ID, threadId)
             put(Telephony.Sms.ADDRESS, address)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, date)
