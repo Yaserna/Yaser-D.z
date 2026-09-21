@@ -1,4 +1,5 @@
-package com.privatemsg.app.ui
+﻿package com.privatemsg.app.ui
+import com.privatemsg.app.data.StarredDbHelper
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -196,7 +197,8 @@ class ConversationActivity : BaseActivity() {
             onNumberClick = { showNumberMenu(it) },
             onSelectionChanged = { updateSelectionUi() },
             sentColor = colorStore.sentBubbleColor,
-            receivedColor = colorStore.receivedBubbleColor
+            receivedColor = colorStore.receivedBubbleColor,
+            isStarred = { StarredDbHelper.getInstance(this).isStarred(it.id, isHidden = false) }
         )
         if (address.isEmpty()) {
             // Compose mode: the list area shows recent conversations as quick
@@ -381,7 +383,13 @@ class ConversationActivity : BaseActivity() {
     }
 
     private fun deleteSelected() {
-        adapter.selectedMessages().forEach { repo.deleteMessage(it.id) }
+        val selected = adapter.selectedMessages()
+        val starredDb = StarredDbHelper.getInstance(this)
+        val (starred, unstarred) = selected.partition { starredDb.isStarred(it.id, isHidden = false) }
+        unstarred.forEach { repo.deleteMessage(it.id) }
+        if (starred.isNotEmpty()) {
+            Toast.makeText(this, "${starred.size} پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+        }
         adapter.exitSelection()
         loadMessages()
     }
@@ -448,10 +456,12 @@ class ConversationActivity : BaseActivity() {
         }
     }
 
-    private fun showMessageMenu(m: Message) {
+        private fun showMessageMenu(m: Message) {
+        val starredDb = StarredDbHelper.getInstance(this)
+        val isStarredMsg = starredDb.isStarred(m.id, isHidden = false)
         val options = arrayOf(
             getString(R.string.choose),
-            getString(R.string.add_favorite),
+            if (isStarredMsg) "حذف ستاره" else "ستاره‌دار کردن (محافظت از حذف)",
             getString(R.string.copy),
             getString(R.string.forward),
             getString(R.string.delete),
@@ -461,8 +471,20 @@ class ConversationActivity : BaseActivity() {
             when (which) {
                 0 -> adapter.startSelection(m)
                 1 -> {
-                    FavoritesDbHelper(this).add(m.address, m.body, m.date)
-                    Toast.makeText(this, R.string.favorite_added, Toast.LENGTH_SHORT).show()
+                    val newlyStarred = starredDb.toggleStar(
+                        messageId = m.id,
+                        isHidden = false,
+                        threadId = threadId,
+                        address = address,
+                        body = m.body,
+                        date = m.date
+                    )
+                    adapter.notifyDataSetChanged()
+                    Toast.makeText(
+                        this,
+                        if (newlyStarred) "پیام ستاره‌دار شد و به برگزیده‌ها اضافه گردید" else "ستاره پیام برداشته شد",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
                 2 -> copyText(m.body)
                 3 -> startActivity(
@@ -470,8 +492,12 @@ class ConversationActivity : BaseActivity() {
                         .putExtra("prefill", m.body)
                 )
                 4 -> {
-                    repo.deleteMessage(m.id)
-                    loadMessages()
+                    if (isStarredMsg) {
+                        Toast.makeText(this, "این پیام ستاره‌دار است و محافظت شده است.", Toast.LENGTH_LONG).show()
+                    } else {
+                        repo.deleteMessage(m.id)
+                        loadMessages()
+                    }
                 }
                 5 -> showDetails(m)
             }

@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
@@ -15,7 +15,7 @@ android {
         // (the phone always sees it as an update; the number shows in Settings).
         val ciRun = (System.getenv("GITHUB_RUN_NUMBER") ?: "0").toIntOrNull() ?: 0
         versionCode = 2 + ciRun
-        versionName = "2.$ciRun"
+        versionName = "1.2.0"
     }
 
     buildFeatures {

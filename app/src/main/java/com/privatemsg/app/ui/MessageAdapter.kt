@@ -1,4 +1,4 @@
-package com.privatemsg.app.ui
+﻿package com.privatemsg.app.ui
 
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -17,7 +17,8 @@ class MessageAdapter(
     private val onNumberClick: (String) -> Unit = {},
     private val onSelectionChanged: () -> Unit = {},
     private val sentColor: Int = com.privatemsg.app.data.SecureStore.DEFAULT_SENT_COLOR,
-    private val receivedColor: Int = com.privatemsg.app.data.SecureStore.DEFAULT_RECEIVED_COLOR
+    private val receivedColor: Int = com.privatemsg.app.data.SecureStore.DEFAULT_RECEIVED_COLOR,
+    private val isStarred: (Message) -> Boolean = { false }
 ) : RecyclerView.Adapter<MessageAdapter.VH>() {
 
     private val items = mutableListOf<Message>()
@@ -101,7 +102,8 @@ class MessageAdapter(
         ).toLatinDigits()
         val lockSign = if (m.isEncrypted) " 🔒" else ""
         val canarySign = if (m.isFromHidden) " a+" else ""
-        holder.binding.time.text = (baseTime + lockSign + canarySign).trim()
+                val starSign = if (isStarred(m)) " ⭐" else ""
+        holder.binding.time.text = (baseTime + starSign + lockSign + canarySign).trim()
         holder.binding.time.setTextColor(
             if (isLight(bubbleColor)) 0xFF555555.toInt() else 0xFFCFCFCF.toInt()
         )

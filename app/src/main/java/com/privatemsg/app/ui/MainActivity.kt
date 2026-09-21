@@ -219,16 +219,21 @@ class MainActivity : BaseActivity() {
 
     private enum class Action { DELETE, READ, PIN, ARCHIVE }
 
-    private fun applyToSelection(action: Action) {
+        private fun applyToSelection(action: Action) {
         val ids = adapter.selectedThreadIds()
         for (id in ids) {
+            val addr = allConvos.firstOrNull { it.threadId == id }?.address.orEmpty()
             when (action) {
                 Action.DELETE -> repo.deleteThread(id)
                 Action.READ -> repo.markThreadRead(id)
-                Action.PIN -> secure.togglePin(id)
-                // Toggle: archiving a normal chat hides it; doing it on an archived
-                // chat (while viewing the archive) brings it back to the main list.
-                Action.ARCHIVE -> secure.setArchived(id, !secure.isArchived(id))
+                Action.PIN -> {
+                    if (addr.isNotBlank()) secure.togglePin(addr)
+                    else secure.togglePin(id)
+                }
+                Action.ARCHIVE -> {
+                    if (addr.isNotBlank()) secure.setArchived(addr, !secure.isArchived(addr))
+                    else secure.setArchived(id, !secure.isArchived(id))
+                }
             }
         }
         adapter.exitSelection()

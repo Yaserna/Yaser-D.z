@@ -11,14 +11,14 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.privatemsg.app.R
 import com.privatemsg.app.data.ContactsHelper
 import com.privatemsg.app.data.Favorite
-import com.privatemsg.app.data.FavoritesDbHelper
+import com.privatemsg.app.data.StarredDbHelper
 import com.privatemsg.app.databinding.ActivityFavoritesBinding
 import com.privatemsg.app.databinding.ItemFavoriteBinding
 
 class FavoritesActivity : BaseActivity() {
 
     private lateinit var binding: ActivityFavoritesBinding
-    private lateinit var db: FavoritesDbHelper
+    private lateinit var starredDb: StarredDbHelper
     private lateinit var adapter: FavAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,7 +27,7 @@ class FavoritesActivity : BaseActivity() {
         setContentView(binding.root)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        db = FavoritesDbHelper(this)
+        starredDb = StarredDbHelper.getInstance(this)
         adapter = FavAdapter(ContactsHelper(this)) { fav -> confirmDelete(fav) }
         binding.recycler.layoutManager = LinearLayoutManager(this)
         binding.recycler.adapter = adapter
@@ -39,7 +39,7 @@ class FavoritesActivity : BaseActivity() {
     }
 
     private fun refresh() {
-        val items = db.getAll()
+        val items = starredDb.getAllFavorites()
         adapter.submit(items)
         binding.empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
     }
@@ -47,7 +47,7 @@ class FavoritesActivity : BaseActivity() {
     private fun confirmDelete(fav: Favorite) {
         MaterialAlertDialogBuilder(this)
             .setItems(arrayOf(getString(R.string.delete))) { _, _ ->
-                db.delete(fav.id)
+                starredDb.unstar(fav.id, isHidden = false)
                 refresh()
             }
             .show()
@@ -61,7 +61,9 @@ class FavoritesActivity : BaseActivity() {
         private val items = mutableListOf<Favorite>()
 
         fun submit(list: List<Favorite>) {
-            items.clear(); items.addAll(list); notifyDataSetChanged()
+            items.clear()
+            items.addAll(list)
+            notifyDataSetChanged()
         }
 
         inner class VH(val binding: ItemFavoriteBinding) : RecyclerView.ViewHolder(binding.root)
