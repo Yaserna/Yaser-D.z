@@ -96,9 +96,12 @@ class MessageAdapter(
 
         // Time: a muted shade of the readable color, so it stays legible on any bubble.
         // Force Latin (English) digits even though the app locale is Persian.
-        holder.binding.time.text = android.text.format.DateUtils.formatDateTime(
+        val baseTime = android.text.format.DateUtils.formatDateTime(
             ctx, m.date, android.text.format.DateUtils.FORMAT_SHOW_TIME
         ).toLatinDigits()
+        val lockSign = if (m.isEncrypted) " 🔒" else ""
+        val canarySign = if (m.isFromHidden) " a+" else ""
+        holder.binding.time.text = (baseTime + lockSign + canarySign).trim()
         holder.binding.time.setTextColor(
             if (isLight(bubbleColor)) 0xFF555555.toInt() else 0xFFCFCFCF.toInt()
         )
@@ -183,3 +186,4 @@ class MessageAdapter(
         private const val FAILED = 5  // Telephony.Sms.MESSAGE_TYPE_FAILED
     }
 }
+

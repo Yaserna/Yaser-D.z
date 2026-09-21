@@ -1,4 +1,4 @@
-package com.privatemsg.app.ui
+﻿package com.privatemsg.app.ui
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -25,6 +25,8 @@ import com.privatemsg.app.data.Message
 import com.privatemsg.app.data.SecureStore
 import com.privatemsg.app.data.SimHelper
 import com.privatemsg.app.databinding.ActivityConversationBinding
+import com.privatemsg.app.data.NumericCipher
+import com.privatemsg.app.data.SmsRepository
 import com.privatemsg.app.sms.Notifier
 import com.privatemsg.app.sms.SmsStatusReceiver
 
@@ -40,6 +42,8 @@ class HiddenConversationActivity : BaseActivity() {
     private var sims: List<SimHelper.Sim> = emptyList()
     private var simIndex: Int = 0
     private var resumedNow = false
+    private var encryptToggle: android.widget.TextView? = null
+    private var honeypotToggle: android.widget.TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +60,7 @@ class HiddenConversationActivity : BaseActivity() {
         updateTitle()
         // Tap the name to give this hidden number a custom display name (app-only).
         binding.titleBox.setOnClickListener { showRenameDialog() }
+        setupTopBarActions()
 
         setupSim()
         val slotMap = sims.associate { it.subId to it.slot }
@@ -187,6 +192,8 @@ class HiddenConversationActivity : BaseActivity() {
         // Opening the conversation clears its unread state and removes its decoy notification.
         hiddenDb.markRead(address)
         Notifier.cancelDecoy(this, address)
+        updateEncryptToggleUi()
+        updateHoneypotToggleUi()
     }
 
     override fun onPause() {
@@ -197,11 +204,27 @@ class HiddenConversationActivity : BaseActivity() {
         if (address.isNotEmpty()) SecureStore(this).setDraft(address, binding.input.text.toString())
     }
 
-    private fun loadMessages() {
-        val msgs = hiddenDb.getMessages(address)
-        adapter.submit(msgs)
+        private fun loadMessages() {
+        val rawMsgs = hiddenDb.getMessages(address)
+        val displayMsgs = rawMsgs.map { m ->
+            if (NumericCipher.isNumericEncrypted(m.body)) {
+                val dec = NumericCipher.decryptFromNumeric(m.body)
+                if (dec != null) {
+                    m.copy(body = dec.text, isEncrypted = true, isFromHidden = dec.fromHidden)
+                } else {
+                    m
+                }
+            } else if (m.body.endsWith(" a+")) {
+                m.copy(body = m.body.removeSuffix(" a+"), isFromHidden = true)
+            } else if (m.body.endsWith("a+")) {
+                m.copy(body = m.body.removeSuffix("a+"), isFromHidden = true)
+            } else {
+                m
+            }
+        }
+        adapter.submit(displayMsgs)
         binding.recycler.scrollToPosition(adapter.itemCount - 1)
-        autoSelectSim(msgs)
+        autoSelectSim(rawMsgs)
     }
 
     /** Reply SIM follows the SIM of the most recent received message (manual change still works). */
@@ -250,21 +273,124 @@ class HiddenConversationActivity : BaseActivity() {
             .show()
     }
 
+        private fun sweepPublicMessages(targetAddress: String) {
+        try {
+            val threadId = android.provider.Telephony.Threads.getOrCreateThreadId(this, targetAddress)
+            if (threadId > 0) {
+                val repo = SmsRepository(this)
+                val publicMsgs = repo.getMessages(threadId)
+                for (m in publicMsgs) {
+                    hiddenDb.insert(
+                        targetAddress,
+                        m.body,
+                        m.date,
+                        m.type,
+                        m.subId
+                    )
+                }
+                repo.deleteThread(threadId)
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun send() {
         val body = binding.input.text.toString().trim()
         if (body.isEmpty() || address.isEmpty()) return
 
+        sweepPublicMessages(address)
+
+        val isEnc = SecureStore(this).isEncryptionEnabled(address)
+        val textToSend = if (isEnc) {
+            NumericCipher.encryptToNumeric(body, fromHidden = true)
+        } else {
+            "$body a+"
+        }
+
         val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
         if (subId >= 0) SecureStore(this).setThreadSim(address, subId)
-        // Store the sent message privately (type 2 = sent); never in the system store.
-        val rowId = hiddenDb.insert(address, body, System.currentTimeMillis(), 2, subId)
+        val rowId = hiddenDb.insert(address, textToSend, System.currentTimeMillis(), 4, subId)
         val deliveredPi =
             if (SecureStore(this).deliveryReportForSub(subId)) hiddenDeliveryIntent(rowId) else null
-        sendViaSms(address, body, null, deliveredPi)
+        sendViaSms(address, textToSend, null, deliveredPi)
 
         binding.input.setText("")
         SecureStore(this).setDraft(address, "")
         loadMessages()
+    }
+
+    private fun setupTopBarActions() {
+        val actionRow = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+
+        val encBtn = android.widget.TextView(this).apply {
+            textSize = 18f
+            setPadding(16, 8, 16, 8)
+            gravity = android.view.Gravity.CENTER
+        }
+        encryptToggle = encBtn
+
+        val hpBtn = android.widget.TextView(this).apply {
+            setText("🎭")
+            textSize = 18f
+            setPadding(16, 8, 16, 8)
+            gravity = android.view.Gravity.CENTER
+        }
+        honeypotToggle = hpBtn
+
+        actionRow.addView(encBtn)
+        actionRow.addView(hpBtn)
+
+        val frame = binding.navBack.parent as? android.widget.FrameLayout
+        frame?.addView(
+            actionRow,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
+            ).apply {
+                marginStart = (8 * resources.displayMetrics.density).toInt()
+            }
+        )
+
+        updateEncryptToggleUi()
+        updateHoneypotToggleUi()
+
+        encBtn.setOnClickListener {
+            val next = SecureStore(this).toggleEncryption(address)
+            updateEncryptToggleUi()
+            android.widget.Toast.makeText(
+                this,
+                if (next) "رمزنگاری عددی فعال شد 🔒" else "رمزنگاری عددی غیرفعال شد 🔓 (ارسال با امضای a+)",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        hpBtn.setOnClickListener {
+            val next = SecureStore(this).toggleHoneypot(address)
+            updateHoneypotToggleUi()
+            android.widget.Toast.makeText(
+                this,
+                if (next) "حالت فریب نفوذگر فعال شد 🎭\n(پیام‌های بدون امضا به پیامک‌های عادی هدایت می‌شوند)"
+                else "حالت فریب نفوذگر غیرفعال شد 🔒\n(تمام پیام‌ها بدون استثنا مخفی می‌شوند)",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun updateEncryptToggleUi() {
+        val btn = encryptToggle ?: return
+        val isEnc = SecureStore(this).isEncryptionEnabled(address)
+        btn.setText(if (isEnc) "🔒" else "🔓")
+        btn.setTextColor(if (isEnc) 0xFFFFB300.toInt() else 0xFF888888.toInt())
+    }
+
+    private fun updateHoneypotToggleUi() {
+        val btn = honeypotToggle ?: return
+        val isHp = SecureStore(this).isHoneypotEnabled(address)
+        btn.setTextColor(if (isHp) 0xFF4DA3FF.toInt() else 0xFF666666.toInt())
+        btn.setAlpha(if (isHp) 1.0f else 0.4f)
     }
 
     /** Delivery report for a hidden message → updates its private-DB row. */

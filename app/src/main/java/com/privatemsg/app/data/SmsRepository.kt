@@ -158,9 +158,56 @@ class SmsRepository(private val context: Context) {
     }
 
     fun deleteThread(threadId: Long) {
-        context.contentResolver.delete(
-            Telephony.Sms.CONTENT_URI, "${Telephony.Sms.THREAD_ID} = ?", arrayOf(threadId.toString())
-        )
+        val starredDb = StarredDbHelper.getInstance(context)
+        val address = try {
+            context.contentResolver.query(
+                Telephony.Sms.CONTENT_URI,
+                arrayOf(Telephony.Sms.ADDRESS),
+                "${Telephony.Sms.THREAD_ID} = ?",
+                arrayOf(threadId.toString()),
+                null
+            )?.use { if (it.moveToFirst()) it.getString(0) else "" } ?: ""
+        } catch (_: Exception) { "" }
+
+        if (address.isNotBlank() && starredDb.isThreadStarred(address)) {
+            return
+        }
+
+        val starredIds = starredDb.getStarredSystemMessageIds(threadId)
+        if (starredIds.isEmpty()) {
+            context.contentResolver.delete(
+                Telephony.Sms.CONTENT_URI, "${Telephony.Sms.THREAD_ID} = ?", arrayOf(threadId.toString())
+            )
+        } else {
+            val inClause = starredIds.joinToString(",")
+            context.contentResolver.delete(
+                Telephony.Sms.CONTENT_URI,
+                "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms._ID} NOT IN ($inClause)",
+                arrayOf(threadId.toString())
+            )
+        }
+    }
+
+    fun insertInboxMessage(
+        address: String,
+        body: String,
+        date: Long,
+        subId: Int = -1,
+        serviceCenter: String = ""
+    ): Long {
+        val values = ContentValues().apply {
+            put(Telephony.Sms.ADDRESS, address)
+            put(Telephony.Sms.BODY, body)
+            put(Telephony.Sms.DATE, date)
+            put(Telephony.Sms.READ, 0)
+            put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_INBOX)
+            if (subId >= 0) put(Telephony.Sms.SUBSCRIPTION_ID, subId)
+            if (serviceCenter.isNotEmpty()) put(Telephony.Sms.SERVICE_CENTER, serviceCenter)
+        }
+        val uri = context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)
+        val id = uri?.lastPathSegment?.toLongOrNull() ?: -1L
+        context.contentResolver.notifyChange(Telephony.Sms.CONTENT_URI, null)
+        return id
     }
 
     fun markThreadRead(threadId: Long) {
@@ -279,3 +326,4 @@ class SmsRepository(private val context: Context) {
         hiddenDb.deleteByAddress(address)
     }
 }
+

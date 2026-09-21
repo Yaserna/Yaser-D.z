@@ -4,17 +4,9 @@ import android.content.Context
 import java.security.MessageDigest
 import java.security.SecureRandom
 
-/**
- * Stores secret settings in private SharedPreferences:
- *  - the PIN (as a salted SHA-256 hash, never in plain text)
- *  - the global decoy notification (fake name, fake text, target conversation)
- *  - the set of hidden phone numbers
- */
 class SecureStore(context: Context) {
 
     private val prefs = context.getSharedPreferences("secure_prefs", Context.MODE_PRIVATE)
-
-    // ---- PIN ----
 
     fun hasPin(): Boolean = prefs.contains(KEY_PIN_HASH)
 
@@ -22,17 +14,16 @@ class SecureStore(context: Context) {
         val salt = newSalt()
         prefs.edit()
             .putString(KEY_PIN_SALT, salt)
-            .putString(KEY_PIN_HASH, hash(pin, salt))
+            .putString(KEY_PIN_HASH, hash(pin.toLatinDigits(), salt))
             .apply()
     }
 
     fun checkPin(pin: String): Boolean {
         val salt = prefs.getString(KEY_PIN_SALT, null) ?: return false
         val stored = prefs.getString(KEY_PIN_HASH, null) ?: return false
-        return stored == hash(pin, salt)
+        val computed = hash(pin.toLatinDigits(), salt)
+        return MessageDigest.isEqual(stored.toByteArray(Charsets.UTF_8), computed.toByteArray(Charsets.UTF_8))
     }
-
-    // ---- Decoy settings ----
 
     var decoyName: String
         get() = prefs.getString(KEY_DECOY_NAME, "") ?: ""
@@ -46,21 +37,15 @@ class SecureStore(context: Context) {
         get() = prefs.getString(KEY_DECOY_TARGET, "") ?: ""
         set(v) = prefs.edit().putString(KEY_DECOY_TARGET, v).apply()
 
-    // ---- Per-number decoy (overrides the global decoy for that one number) ----
-
-    /** Fake sender name for this number; falls back to the global decoy name. */
     fun decoyNameFor(address: String): String =
         prefs.getString(KEY_DECOY_NAME + "_" + normalize(address), null) ?: decoyName
 
-    /** Fake message text for this number; falls back to the global decoy text. */
     fun decoyTextFor(address: String): String =
         prefs.getString(KEY_DECOY_TEXT + "_" + normalize(address), null) ?: decoyText
 
-    /** Conversation opened when this number's decoy is tapped; falls back to global. */
     fun decoyTargetFor(address: String): String =
         prefs.getString(KEY_DECOY_TARGET + "_" + normalize(address), null) ?: decoyTarget
 
-    /** True if this number has its own decoy notification configured. */
     fun hasCustomDecoy(address: String): Boolean {
         val n = normalize(address)
         return prefs.contains(KEY_DECOY_NAME + "_" + n) ||
@@ -86,14 +71,11 @@ class SecureStore(context: Context) {
             .apply()
     }
 
-    // ---- Hidden numbers ----
-
     fun getHiddenNumbers(): Set<String> =
         prefs.getStringSet(KEY_HIDDEN, emptySet())?.toSet() ?: emptySet()
 
     fun addHiddenNumber(number: String) {
         val set = getHiddenNumbers().toMutableSet()
-        // Store the original address (for display); matching is done via normalize().
         set.add(number.trim())
         prefs.edit().putStringSet(KEY_HIDDEN, set).apply()
     }
@@ -102,8 +84,6 @@ class SecureStore(context: Context) {
         val target = normalize(number)
         val set = getHiddenNumbers().filterNot { normalize(it) == target }.toSet()
         prefs.edit().putStringSet(KEY_HIDDEN, set).apply()
-        // Drop any custom decoy that belonged to this number.
-        clearDecoyFor(number)
     }
 
     fun isHidden(address: String): Boolean {
@@ -111,88 +91,99 @@ class SecureStore(context: Context) {
         return getHiddenNumbers().any { normalize(it) == n }
     }
 
-    // ---- Pinned conversations (by thread id) ----
-
-    fun getPinned(): Set<Long> =
-        prefs.getStringSet(KEY_PINNED, emptySet())?.mapNotNull { it.toLongOrNull() }?.toSet()
-            ?: emptySet()
-
-    fun togglePin(threadId: Long) {
-        val set = getPinned().toMutableSet()
-        if (!set.add(threadId)) set.remove(threadId)
-        prefs.edit().putStringSet(KEY_PINNED, set.map { it.toString() }.toSet()).apply()
+    // متدهای نشانی‌محور پایدار
+    fun isPinned(address: String): Boolean {
+        if (address.isBlank()) return false
+        return prefs.getStringSet(KEY_PINNED_ADDR, emptySet())?.contains(normalize(address)) == true
     }
 
-    fun isPinned(threadId: Long): Boolean = getPinned().contains(threadId)
+    fun togglePin(address: String): Boolean {
+        if (address.isBlank()) return false
+        val norm = normalize(address)
+        val set = (prefs.getStringSet(KEY_PINNED_ADDR, emptySet()) ?: emptySet()).toMutableSet()
+        val next = set.add(norm)
+        if (!next) set.remove(norm)
+        prefs.edit().putStringSet(KEY_PINNED_ADDR, set).apply()
+        return next
+    }
 
-    // ---- Archived conversations (by thread id) ----
+    // متدهای سازگاری موقت برای threadId
+    fun isPinned(threadId: Long): Boolean =
+        prefs.getStringSet(KEY_PINNED, emptySet())?.contains(threadId.toString()) == true
 
-    fun getArchived(): Set<Long> =
-        prefs.getStringSet(KEY_ARCHIVED, emptySet())?.mapNotNull { it.toLongOrNull() }?.toSet()
-            ?: emptySet()
+    fun togglePin(threadId: Long): Boolean {
+        val set = (prefs.getStringSet(KEY_PINNED, emptySet()) ?: emptySet()).toMutableSet()
+        val key = threadId.toString()
+        val next = set.add(key)
+        if (!next) set.remove(key)
+        prefs.edit().putStringSet(KEY_PINNED, set).apply()
+        return next
+    }
 
-    fun isArchived(threadId: Long): Boolean = getArchived().contains(threadId)
+    fun isArchived(address: String): Boolean {
+        if (address.isBlank()) return false
+        return prefs.getStringSet(KEY_ARCHIVED_ADDR, emptySet())?.contains(normalize(address)) == true
+    }
+
+    fun setArchived(address: String, archived: Boolean) {
+        if (address.isBlank()) return
+        val norm = normalize(address)
+        val set = (prefs.getStringSet(KEY_ARCHIVED_ADDR, emptySet()) ?: emptySet()).toMutableSet()
+        if (archived) set.add(norm) else set.remove(norm)
+        prefs.edit().putStringSet(KEY_ARCHIVED_ADDR, set).apply()
+    }
+
+    fun isArchived(threadId: Long): Boolean =
+        prefs.getStringSet(KEY_ARCHIVED, emptySet())?.contains(threadId.toString()) == true
 
     fun setArchived(threadId: Long, archived: Boolean) {
-        val set = getArchived().toMutableSet()
-        if (archived) set.add(threadId) else set.remove(threadId)
-        prefs.edit().putStringSet(KEY_ARCHIVED, set.map { it.toString() }.toSet()).apply()
+        val set = (prefs.getStringSet(KEY_ARCHIVED, emptySet()) ?: emptySet()).toMutableSet()
+        val key = threadId.toString()
+        if (archived) set.add(key) else set.remove(key)
+        prefs.edit().putStringSet(KEY_ARCHIVED, set).apply()
     }
 
-    /** Word the user types in search to open the archive (default «بایگانی», editable). */
-    var archiveKeyword: String
-        get() = prefs.getString(KEY_ARCHIVE_WORD, null)?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_ARCHIVE_WORD
-        set(v) = prefs.edit().putString(KEY_ARCHIVE_WORD, v.trim()).apply()
+    fun getArchived(): Set<Long> =
+        prefs.getStringSet(KEY_ARCHIVED, emptySet())?.mapNotNull { it.toLongOrNull() }?.toSet() ?: emptySet()
 
-    // ---- App settings ----
+    var archiveKeyword: String
+        get() = prefs.getString(KEY_ARCHIVE_WORD, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_ARCHIVE_WORD
+        set(v) = prefs.edit().putString(KEY_ARCHIVE_WORD, v.trim()).apply()
 
     var deliveryReportEnabled: Boolean
         get() = prefs.getBoolean(KEY_DELIVERY, true)
         set(v) = prefs.edit().putBoolean(KEY_DELIVERY, v).apply()
 
-    /** Delivery report on/off per SIM (falls back to the old global value). */
     fun deliveryReportForSub(subId: Int): Boolean =
         prefs.getBoolean(KEY_DELIVERY + "_" + subId, deliveryReportEnabled)
 
     fun setDeliveryReportForSub(subId: Int, enabled: Boolean) =
         prefs.edit().putBoolean(KEY_DELIVERY + "_" + subId, enabled).apply()
 
-    // ---- Display size ----
-
-    /** Extra scaling applied to text only (sp). 1.0 = normal. */
     var fontScale: Float
         get() = prefs.getFloat(KEY_FONT_SCALE, 1f)
         set(v) = prefs.edit().putFloat(KEY_FONT_SCALE, v).apply()
 
-    /** Scaling applied to the whole UI (like changing screen DPI). 1.0 = normal. */
     var uiScale: Float
         get() = prefs.getFloat(KEY_UI_SCALE, 1f)
         set(v) = prefs.edit().putFloat(KEY_UI_SCALE, v).apply()
 
-    /** Allow unlocking the hidden section with a fingerprint (in addition to the PIN). */
     var fingerprintEnabled: Boolean
         get() = prefs.getBoolean(KEY_FINGERPRINT, false)
         set(v) = prefs.edit().putBoolean(KEY_FINGERPRINT, v).apply()
 
-    /** Play a sound for hidden (decoy) notifications. Off by default (vibration only). */
     var decoySoundEnabled: Boolean
         get() = prefs.getBoolean(KEY_DECOY_SOUND, false)
         set(v) = prefs.edit().putBoolean(KEY_DECOY_SOUND, v).apply()
 
-    /** App theme: 0 = follow system, 1 = light, 2 = dark. Default dark (original look). */
     var themeMode: Int
         get() = prefs.getInt(KEY_THEME, THEME_DARK)
         set(v) = prefs.edit().putInt(KEY_THEME, v).apply()
 
-    /** Which launcher-icon alias is active (default the original icon). */
     var appIcon: String
         get() = prefs.getString(KEY_APP_ICON, ICON_DEFAULT) ?: ICON_DEFAULT
         set(v) = prefs.edit().putString(KEY_APP_ICON, v).apply()
 
-    // ---- Per-hidden-number display alias (shown only inside the app; contacts untouched) ----
-
-    /** Custom display name for a hidden number, or null if none set. */
     fun hiddenAliasFor(address: String): String? =
         prefs.getString(KEY_HIDDEN_ALIAS + "_" + normalize(address), null)?.takeIf { it.isNotBlank() }
 
@@ -202,31 +193,21 @@ class SecureStore(context: Context) {
         else prefs.edit().putString(key, name.trim()).apply()
     }
 
-    // ---- Bubble colors ----
-
-    /** Background color of messages I send (default Mi green). */
     var sentBubbleColor: Int
         get() = prefs.getInt(KEY_SENT_COLOR, DEFAULT_SENT_COLOR)
         set(v) = prefs.edit().putInt(KEY_SENT_COLOR, v).apply()
 
-    /** Background color of messages I receive (default Mi grey). */
     var receivedBubbleColor: Int
         get() = prefs.getInt(KEY_RECEIVED_COLOR, DEFAULT_RECEIVED_COLOR)
         set(v) = prefs.edit().putInt(KEY_RECEIVED_COLOR, v).apply()
 
-    // ---- Recently opened conversations (to rank compose suggestions) ----
-
-    /** Remember that this conversation was just opened. */
     fun recordConversationOpened(address: String) {
         if (address.isBlank()) return
         prefs.edit().putLong("opened_" + normalize(address), System.currentTimeMillis()).apply()
     }
 
-    /** When this conversation was last opened (0 if never). */
     fun openedAt(address: String): Long =
         if (address.isBlank()) 0L else prefs.getLong("opened_" + normalize(address), 0L)
-
-    // ---- Draft (unsent text kept per conversation) ----
 
     fun getDraft(address: String): String =
         if (address.isBlank()) "" else prefs.getString("draft_" + normalize(address), "") ?: ""
@@ -238,14 +219,56 @@ class SecureStore(context: Context) {
         else prefs.edit().putString(key, text).apply()
     }
 
-    // ---- Per-conversation preferred SIM ----
-
     fun getThreadSim(address: String): Int =
         if (address.isBlank()) -1 else prefs.getInt("sim_" + normalize(address), -1)
 
     fun setThreadSim(address: String, subId: Int) {
         if (address.isBlank()) return
         prefs.edit().putInt("sim_" + normalize(address), subId).apply()
+    }
+
+    fun isMuted(address: String): Boolean =
+        if (address.isBlank()) false else prefs.getBoolean(KEY_MUTED + "_" + normalize(address), false)
+
+    fun setMuted(address: String, muted: Boolean) {
+        if (address.isBlank()) return
+        val key = KEY_MUTED + "_" + normalize(address)
+        if (muted) prefs.edit().putBoolean(key, true).apply()
+        else prefs.edit().remove(key).apply()
+    }
+
+    fun toggleMute(address: String): Boolean {
+        val next = !isMuted(address)
+        setMuted(address, next)
+        return next
+    }
+
+    fun isEncryptionEnabled(address: String): Boolean =
+        if (address.isBlank()) true else prefs.getBoolean("enc_mode_" + normalize(address), true)
+
+    fun setEncryptionEnabled(address: String, enabled: Boolean) {
+        if (address.isBlank()) return
+        prefs.edit().putBoolean("enc_mode_" + normalize(address), enabled).apply()
+    }
+
+    fun toggleEncryption(address: String): Boolean {
+        val next = !isEncryptionEnabled(address)
+        setEncryptionEnabled(address, next)
+        return next
+    }
+
+    fun isHoneypotEnabled(address: String): Boolean =
+        if (address.isBlank()) true else prefs.getBoolean("honeypot_mode_" + normalize(address), true)
+
+    fun setHoneypotEnabled(address: String, enabled: Boolean) {
+        if (address.isBlank()) return
+        prefs.edit().putBoolean("honeypot_mode_" + normalize(address), enabled).apply()
+    }
+
+    fun toggleHoneypot(address: String): Boolean {
+        val next = !isHoneypotEnabled(address)
+        setHoneypotEnabled(address, next)
+        return next
     }
 
     companion object {
@@ -256,7 +279,9 @@ class SecureStore(context: Context) {
         private const val KEY_DECOY_TARGET = "decoy_target"
         private const val KEY_HIDDEN = "hidden_numbers"
         private const val KEY_PINNED = "pinned_threads"
+        private const val KEY_PINNED_ADDR = "pinned_addresses"
         private const val KEY_ARCHIVED = "archived_threads"
+        private const val KEY_ARCHIVED_ADDR = "archived_addresses"
         private const val KEY_ARCHIVE_WORD = "archive_keyword"
         const val DEFAULT_ARCHIVE_WORD = "بایگانی"
         private const val KEY_DELIVERY = "delivery_report"
@@ -267,25 +292,19 @@ class SecureStore(context: Context) {
         private const val KEY_THEME = "theme_mode"
         private const val KEY_APP_ICON = "app_icon"
         private const val KEY_HIDDEN_ALIAS = "hidden_alias"
+        private const val KEY_MUTED = "muted_thread"
 
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
         const val THEME_DARK = 2
 
-        /** Launcher-icon alias names (must match the <activity-alias> entries in the manifest). */
         const val ICON_DEFAULT = "IconDefault"
         private const val KEY_SENT_COLOR = "sent_bubble_color"
         private const val KEY_RECEIVED_COLOR = "received_bubble_color"
 
-        /** Default sent bubble = Mi green; received = Mi grey pill. */
         const val DEFAULT_SENT_COLOR = 0xFF1FA055.toInt()
         const val DEFAULT_RECEIVED_COLOR = 0xFF2C2C2E.toInt()
 
-        /**
-         * Normalize an address for matching.
-         * - Real phone numbers (only digits and separators, 7+ digits) -> last 10 digits.
-         * - Operator/alphanumeric sender IDs (e.g. names with letters) -> lowercased text.
-         */
         fun normalize(address: String): String {
             val trimmed = address.trim()
             val digits = trimmed.filter { it.isDigit() }
@@ -305,8 +324,22 @@ class SecureStore(context: Context) {
 
         private fun hash(pin: String, salt: String): String {
             val md = MessageDigest.getInstance("SHA-256")
-            val out = md.digest((salt + pin).toByteArray())
+            val out = md.digest((salt + pin).toByteArray(Charsets.UTF_8))
             return out.joinToString("") { "%02x".format(it) }
         }
     }
+}
+
+fun String.toLatinDigits(): String {
+    val sb = java.lang.StringBuilder(length)
+    for (ch in this) {
+        sb.append(
+            when (ch) {
+                in '۰'..'۹' -> '0' + (ch - '۰')
+                in '٠'..'٩' -> '0' + (ch - '٠')
+                else -> ch
+            }
+        )
+    }
+    return sb.toString()
 }

@@ -6,7 +6,10 @@ data class Conversation(
     val snippet: String,
     val date: Long,
     val unread: Boolean = false,
-    val failed: Boolean = false
+    val failed: Boolean = false,
+    val draft: String? = null,
+    val isMuted: Boolean = false,
+    val isProtected: Boolean = false
 )
 
 data class Message(
@@ -15,7 +18,11 @@ data class Message(
     val address: String,
     val body: String,
     val date: Long,
-    val type: Int, // 1 = inbox, 2 = sent
+    val type: Int,
     val subId: Int = -1,
-    val status: Int = -1 // Telephony status: 0 = delivered
+    val status: Int = -1,
+    val dateSent: Long = 0L,
+    val serviceCenter: String = "",
+    val isEncrypted: Boolean = false,
+    val isFromHidden: Boolean = false
 )

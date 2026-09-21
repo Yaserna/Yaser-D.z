@@ -1,4 +1,4 @@
-package com.privatemsg.app.ui
+﻿package com.privatemsg.app.ui
 
 import android.text.format.DateUtils
 import android.view.LayoutInflater
@@ -19,15 +19,27 @@ class ConversationAdapter(
     private val nameOverride: ((Conversation) -> String?)? = null
 ) : RecyclerView.Adapter<ConversationAdapter.VH>() {
 
-    private val items = mutableListOf<Conversation>()
+        private val items = mutableListOf<Conversation>()
+    init {
+        stateRestorationPolicy = androidx.recyclerview.widget.RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY
+    }
     private val selected = mutableSetOf<Long>()
     var selectionMode = false
         private set
 
     fun submit(list: List<Conversation>) {
+        val oldList = java.util.ArrayList(items)
+        val diff = androidx.recyclerview.widget.DiffUtil.calculateDiff(object : androidx.recyclerview.widget.DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldList.size
+            override fun getNewListSize(): Int = list.size
+            override fun areItemsTheSame(oldPos: Int, newPos: Int): Boolean =
+                oldList[oldPos].threadId == list[newPos].threadId
+            override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean =
+                oldList[oldPos] == list[newPos]
+        })
         items.clear()
         items.addAll(list)
-        notifyDataSetChanged()
+        diff.dispatchUpdatesTo(this)
     }
 
     fun startSelection(conv: Conversation) {

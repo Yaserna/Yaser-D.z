@@ -1,4 +1,5 @@
-package com.privatemsg.app.ui
+﻿package com.privatemsg.app.ui
+import com.privatemsg.app.data.StarredDbHelper
 
 import android.Manifest
 import android.app.role.RoleManager
@@ -395,15 +396,15 @@ class MainActivity : BaseActivity() {
             val all = repo.getConversations()
             val archivedIds = secure.getArchived()
             // 1) The main list (archived chats excluded) shows immediately.
-            val main = all.filter { it.threadId !in archivedIds }
-                .sortedByDescending { secure.isPinned(it.threadId) }
+            val main = all.filter { !secure.isArchived(it.address) }
+                .sortedByDescending { secure.isPinned(it.address) }
             runOnUiThread {
                 allConvos = main
                 if (binding.searchInput.text.isNullOrEmpty()) adapter.submit(main)
             }
             // 2) Archived chats are processed AFTER the main list is on screen, so
             //    startup stays light. They only feed the unread badge + archive view.
-            val archived = all.filter { it.threadId in archivedIds }
+            val archived = all.filter { secure.isArchived(it.address) }
                 .sortedByDescending { it.date }
             runOnUiThread {
                 archivedConvos = archived
