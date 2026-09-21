@@ -1,7 +1,12 @@
 ﻿package com.privatemsg.app.ui
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import com.privatemsg.app.sms.SmsStatusReceiver
 import android.os.Bundle
 import android.text.InputType
 import android.view.Menu
@@ -94,6 +99,23 @@ class HiddenActivity : BaseActivity() {
         )
         binding.recycler.layoutManager = LinearLayoutManager(this)
         binding.recycler.adapter = adapter
+
+        ContextCompat.registerReceiver(
+            this, refreshReceiver,
+            IntentFilter(SmsStatusReceiver.ACTION_HIDDEN_REFRESH),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    private val refreshReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            refresh()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unregisterReceiver(refreshReceiver) } catch (_: Exception) {}
     }
 
     override fun onResume() {
