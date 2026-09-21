@@ -1,4 +1,4 @@
-package com.privatemsg.app.ui
+﻿package com.privatemsg.app.ui
 
 import android.app.Activity
 import android.content.Intent
@@ -25,6 +25,26 @@ import com.privatemsg.app.databinding.ActivityHiddenBinding
 
 /** The secret section: lists hidden conversations and decoy settings. */
 class HiddenActivity : BaseActivity() {
+    private val bgExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    private fun runAsyncOperation(message: String, task: () -> Unit) {
+        val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setMessage(message)
+            .setCancelable(false)
+            .create()
+        dialog.show()
+
+        bgExecutor.execute {
+            try {
+                task()
+            } finally {
+                runOnUiThread {
+                    try { dialog.dismiss() } catch (_: Exception) {}
+                    refresh()
+                }
+            }
+        }
+    }
 
     override val leavesToMainOnBackground = true
 
@@ -117,8 +137,9 @@ class HiddenActivity : BaseActivity() {
                 val num = input.text.toString().trim()
                 if (num.isNotEmpty()) {
                     secure.addHiddenNumber(num)
-                    repo.migrateToHidden(num, hiddenDb)
-                    refresh()
+                    runAsyncOperation("در حال انتقال پیام‌ها به بخش مخفی...") {
+                        repo.migrateToHidden(num, hiddenDb)
+                    }
                 }
             }
             .setNeutralButton(R.string.from_conversations) { _, _ ->
@@ -177,8 +198,9 @@ class HiddenActivity : BaseActivity() {
             .setMessage(getString(R.string.unhide_msg))
             .setPositiveButton(getString(R.string.unhide)) { _, _ ->
                 secure.removeHiddenNumber(address)
-                repo.restoreFromHidden(address, hiddenDb)
-                refresh()
+                runAsyncOperation("در حال خروج از مخفی و بازگردانی پیام‌ها...") {
+                    repo.restoreFromHidden(address, hiddenDb)
+                }
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()

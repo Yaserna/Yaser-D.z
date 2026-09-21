@@ -157,6 +157,19 @@ class SmsRepository(private val context: Context) {
         )
     }
 
+    fun deleteMessages(ids: Collection<Long>) {
+        if (ids.isEmpty()) return
+        ids.chunked(100).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            val args = chunk.map { it.toString() }.toTypedArray()
+            context.contentResolver.delete(
+                Telephony.Sms.CONTENT_URI,
+                "${Telephony.Sms._ID} IN ($placeholders)",
+                args
+            )
+        }
+    }
+
     fun deleteThread(threadId: Long) {
         val starredDb = StarredDbHelper.getInstance(context)
         val address = try {
@@ -224,7 +237,7 @@ class SmsRepository(private val context: Context) {
      * hidden database, then delete them from the system store so the
      * conversation disappears from everywhere outside this app.
      */
-    fun migrateToHidden(address: String, hiddenDb: HiddenDbHelper) {
+        fun migrateToHidden(address: String, hiddenDb: HiddenDbHelper) {
         val target = SecureStore.normalize(address)
         val idsToDelete = mutableListOf<Long>()
         val projection = arrayOf(
@@ -234,30 +247,42 @@ class SmsRepository(private val context: Context) {
             Telephony.Sms.DATE,
             Telephony.Sms.TYPE
         )
-        context.contentResolver.query(
-            Telephony.Sms.CONTENT_URI, projection, null, null,
-            "${Telephony.Sms.DATE} ASC"
-        )?.use { c ->
-            val iId = c.getColumnIndexOrThrow(Telephony.Sms._ID)
-            val iAddr = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
-            val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
-            val iDate = c.getColumnIndexOrThrow(Telephony.Sms.DATE)
-            val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
-            while (c.moveToNext()) {
-                val addr = c.getString(iAddr) ?: ""
-                if (SecureStore.normalize(addr) != target) continue
-                hiddenDb.insert(
-                    addr,
-                    c.getString(iBody) ?: "",
-                    c.getLong(iDate),
-                    c.getInt(iType)
-                )
-                idsToDelete.add(c.getLong(iId))
+        val db = hiddenDb.writableDatabase
+        db.beginTransaction()
+        try {
+            context.contentResolver.query(
+                Telephony.Sms.CONTENT_URI, projection, null, null,
+                "${Telephony.Sms.DATE} ASC"
+            )?.use { c ->
+                val iId = c.getColumnIndexOrThrow(Telephony.Sms._ID)
+                val iAddr = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
+                val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
+                val iDate = c.getColumnIndexOrThrow(Telephony.Sms.DATE)
+                val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
+                while (c.moveToNext()) {
+                    val addr = c.getString(iAddr) ?: ""
+                    if (SecureStore.normalize(addr) != target) continue
+                    hiddenDb.insert(
+                        addr,
+                        c.getString(iBody) ?: "",
+                        c.getLong(iDate),
+                        c.getInt(iType)
+                    )
+                    idsToDelete.add(c.getLong(iId))
+                }
             }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        for (id in idsToDelete) {
+
+        idsToDelete.chunked(100).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            val args = chunk.map { it.toString() }.toTypedArray()
             context.contentResolver.delete(
-                Telephony.Sms.CONTENT_URI, "${Telephony.Sms._ID} = ?", arrayOf(id.toString())
+                Telephony.Sms.CONTENT_URI,
+                "${Telephony.Sms._ID} IN ($placeholders)",
+                args
             )
         }
     }
@@ -310,26 +335,39 @@ class SmsRepository(private val context: Context) {
     }
 
     /** Move a hidden conversation back into the visible system store. */
-        fun restoreFromHidden(address: String, hiddenDb: HiddenDbHelper) {
-        val isEnc = SecureStore(context).isEncryptionEnabled(address)
-        for (m in hiddenDb.getMessages(address)) {
-            val bodyToInsert = if (NumericCipher.isNumericEncrypted(m.body)) {
-                m.body
-            } else if (isEnc) {
-                NumericCipher.encryptToNumeric(m.body, fromHidden = false)
+                fun restoreFromHidden(address: String, hiddenDb: HiddenDbHelper) {
+        val messages = hiddenDb.getMessages(address)
+        val sentValues = mutableListOf<ContentValues>()
+        val inboxValues = mutableListOf<ContentValues>()
+        for (m in messages) {
+            // بازیابی قطعی متن اصلی: در صورت وجود پیام‌های رمزشده تستی، آن‌ها را به متن باز می‌گرداند
+            val cleanBody = if (NumericCipher.isNumericEncrypted(m.body)) {
+                NumericCipher.decryptFromNumeric(m.body)?.text ?: m.body
+            } else if (m.body.endsWith(" a+")) {
+                m.body.removeSuffix(" a+")
+            } else if (m.body.endsWith("a+")) {
+                m.body.removeSuffix("a+")
             } else {
                 m.body
             }
             val values = ContentValues().apply {
                 put(Telephony.Sms.ADDRESS, m.address)
-                put(Telephony.Sms.BODY, bodyToInsert)
+                put(Telephony.Sms.BODY, cleanBody)
                 put(Telephony.Sms.DATE, m.date)
                 put(Telephony.Sms.READ, 1)
                 put(Telephony.Sms.TYPE, m.type)
             }
-            val uri = if (m.type == Telephony.Sms.MESSAGE_TYPE_SENT)
-                Telephony.Sms.Sent.CONTENT_URI else Telephony.Sms.Inbox.CONTENT_URI
-            context.contentResolver.insert(uri, values)
+            if (m.type == Telephony.Sms.MESSAGE_TYPE_SENT) {
+                sentValues.add(values)
+            } else {
+                inboxValues.add(values)
+            }
+        }
+        if (sentValues.isNotEmpty()) {
+            context.contentResolver.bulkInsert(Telephony.Sms.Sent.CONTENT_URI, sentValues.toTypedArray())
+        }
+        if (inboxValues.isNotEmpty()) {
+            context.contentResolver.bulkInsert(Telephony.Sms.Inbox.CONTENT_URI, inboxValues.toTypedArray())
         }
         hiddenDb.deleteByAddress(address)
     }

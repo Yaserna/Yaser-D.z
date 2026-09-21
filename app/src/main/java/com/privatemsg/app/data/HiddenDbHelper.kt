@@ -6,15 +6,22 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /**
- * Private local database for hidden messages. These never touch the system
- * SMS store, so they are invisible to everything outside this app.
+ * Private local database for hidden messages.
+ * Thread-safe singleton with WAL mode enabled to prevent database locking.
  */
 class HiddenDbHelper(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        try {
+            db.enableWriteAheadLogging()
+        } catch (_: Exception) {}
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
-            "CREATE TABLE $TABLE (" +
+            "CREATE TABLE IF NOT EXISTS $TABLE (" +
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
                 "address TEXT, " +
                 "body TEXT, " +
@@ -24,6 +31,7 @@ class HiddenDbHelper(context: Context) :
                 "status INTEGER DEFAULT -1, " +
                 "read INTEGER DEFAULT 1)"
         )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_hidden_address ON $TABLE(address)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -34,12 +42,14 @@ class HiddenDbHelper(context: Context) :
             db.execSQL("ALTER TABLE $TABLE ADD COLUMN status INTEGER DEFAULT -1")
         }
         if (oldVersion < 4) {
-            // Existing messages are considered already read.
             db.execSQL("ALTER TABLE $TABLE ADD COLUMN read INTEGER DEFAULT 1")
+        }
+        if (oldVersion < 5) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_hidden_address ON $TABLE(address)")
         }
     }
 
-    /** Inserts a message and returns its new row id. */
+    @Synchronized
     fun insert(address: String, body: String, date: Long, type: Int, subId: Int = -1): Long {
         val values = ContentValues().apply {
             put("address", address)
@@ -48,27 +58,32 @@ class HiddenDbHelper(context: Context) :
             put("type", type)
             put("sub_id", subId)
             put("status", -1)
-            // Incoming messages start unread; everything else (sent) is read.
             put("read", if (type == INBOX) 0 else 1)
         }
         return writableDatabase.insert(TABLE, null, values)
     }
 
-    /** Marks every message of this address as read. */
+    @Synchronized
     fun markRead(address: String) {
         val target = SecureStore.normalize(address)
         val db = writableDatabase
-        db.query(TABLE, arrayOf("id", "address"), "read = 0", null, null, null, null).use { c ->
-            while (c.moveToNext()) {
-                if (SecureStore.normalize(c.getString(1) ?: "") == target) {
-                    val v = ContentValues().apply { put("read", 1) }
-                    db.update(TABLE, v, "id = ?", arrayOf(c.getLong(0).toString()))
+        db.beginTransaction()
+        try {
+            db.query(TABLE, arrayOf("id", "address"), "read = 0", null, null, null, null).use { c ->
+                while (c.moveToNext()) {
+                    if (SecureStore.normalize(c.getString(1) ?: "") == target) {
+                        val v = ContentValues().apply { put("read", 1) }
+                        db.update(TABLE, v, "id = ?", arrayOf(c.getLong(0).toString()))
+                    }
                 }
             }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
     }
 
-    /** True if this address has at least one unread incoming message. */
+    @Synchronized
     fun hasUnread(address: String): Boolean {
         val target = SecureStore.normalize(address)
         readableDatabase.query(
@@ -81,13 +96,13 @@ class HiddenDbHelper(context: Context) :
         return false
     }
 
-    /** Updates the delivery status of a hidden message (0 = delivered). */
+    @Synchronized
     fun updateStatus(id: Long, status: Int) {
         val values = ContentValues().apply { put("status", status) }
         writableDatabase.update(TABLE, values, "id = ?", arrayOf(id.toString()))
     }
 
-    /** One entry per distinct hidden address, newest message as snippet. */
+    @Synchronized
     fun getConversations(): List<Conversation> {
         val list = mutableListOf<Conversation>()
         val seen = HashSet<String>()
@@ -112,6 +127,7 @@ class HiddenDbHelper(context: Context) :
         return list
     }
 
+    @Synchronized
     fun getMessages(address: String): List<Message> {
         val list = mutableListOf<Message>()
         val target = SecureStore.normalize(address)
@@ -139,27 +155,43 @@ class HiddenDbHelper(context: Context) :
         return list
     }
 
+    @Synchronized
     fun deleteById(id: Long) {
         writableDatabase.delete(TABLE, "id = ?", arrayOf(id.toString()))
     }
 
+    @Synchronized
     fun deleteByAddress(address: String) {
         val target = SecureStore.normalize(address)
         val db = writableDatabase
-        db.query(TABLE, arrayOf("id", "address"), null, null, null, null, null).use { c ->
-            while (c.moveToNext()) {
-                val addr = c.getString(1) ?: ""
-                if (SecureStore.normalize(addr) == target) {
-                    db.delete(TABLE, "id = ?", arrayOf(c.getLong(0).toString()))
+        db.beginTransaction()
+        try {
+            db.query(TABLE, arrayOf("id", "address"), null, null, null, null, null).use { c ->
+                while (c.moveToNext()) {
+                    val addr = c.getString(1) ?: ""
+                    if (SecureStore.normalize(addr) == target) {
+                        db.delete(TABLE, "id = ?", arrayOf(c.getLong(0).toString()))
+                    }
                 }
             }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
     }
 
     companion object {
         private const val DB_NAME = "hidden.db"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 5
         private const val TABLE = "hidden_sms"
         private const val INBOX = 1
+
+        @Volatile
+        private var instance: HiddenDbHelper? = null
+
+        fun getInstance(context: Context): HiddenDbHelper =
+            instance ?: synchronized(this) {
+                instance ?: HiddenDbHelper(context).also { instance = it }
+            }
     }
 }

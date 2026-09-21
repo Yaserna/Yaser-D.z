@@ -1,5 +1,4 @@
 ﻿package com.privatemsg.app.ui
-import com.privatemsg.app.data.NumericCipher
 import com.privatemsg.app.data.StarredDbHelper
 
 import android.content.ClipData
@@ -383,16 +382,32 @@ class ConversationActivity : BaseActivity() {
         if (on) binding.selCount.text = getString(R.string.n_selected, adapter.selectedCount())
     }
 
-    private fun deleteSelected() {
+        private fun deleteSelected() {
         val selected = adapter.selectedMessages()
+        if (selected.isEmpty()) return
         val starredDb = StarredDbHelper.getInstance(this)
         val (starred, unstarred) = selected.partition { starredDb.isStarred(it.id, isHidden = false) }
-        unstarred.forEach { repo.deleteMessage(it.id) }
-        if (starred.isNotEmpty()) {
-            Toast.makeText(this, "${starred.size} پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+
+        val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setMessage("در حال حذف پیام‌ها...")
+            .setCancelable(false)
+            .create()
+        dialog.show()
+
+        java.util.concurrent.Executors.newSingleThreadExecutor().execute {
+            try {
+                repo.deleteMessages(unstarred.map { it.id })
+            } finally {
+                runOnUiThread {
+                    try { dialog.dismiss() } catch (_: Exception) {}
+                    if (starred.isNotEmpty()) {
+                        Toast.makeText(this, "${starred.size} پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+                    }
+                    adapter.exitSelection()
+                    loadMessages()
+                }
+            }
         }
-        adapter.exitSelection()
-        loadMessages()
     }
 
     private fun copySelected() {
@@ -534,26 +549,10 @@ class ConversationActivity : BaseActivity() {
 
         private fun loadMessages() {
         if (threadId > 0) {
-            val rawMsgs = repo.getMessages(threadId)
-            val displayMsgs = rawMsgs.map { m ->
-                if (NumericCipher.isNumericEncrypted(m.body)) {
-                    val dec = NumericCipher.decryptFromNumeric(m.body)
-                    if (dec != null) {
-                        m.copy(body = dec.text, isEncrypted = true, isFromHidden = dec.fromHidden)
-                    } else {
-                        m
-                    }
-                } else if (m.body.endsWith(" a+")) {
-                    m.copy(body = m.body.removeSuffix(" a+"), isFromHidden = true)
-                } else if (m.body.endsWith("a+")) {
-                    m.copy(body = m.body.removeSuffix("a+"), isFromHidden = true)
-                } else {
-                    m
-                }
-            }
-            adapter.submit(displayMsgs)
+            val msgs = repo.getMessages(threadId)
+            adapter.submit(msgs)
             binding.recycler.scrollToPosition(adapter.itemCount - 1)
-            autoSelectSim(rawMsgs)
+            autoSelectSim(msgs)
         }
     }
 
