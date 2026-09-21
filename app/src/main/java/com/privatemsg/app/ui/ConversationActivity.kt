@@ -1,4 +1,5 @@
 ﻿package com.privatemsg.app.ui
+import com.privatemsg.app.data.NumericCipher
 import com.privatemsg.app.data.StarredDbHelper
 
 import android.content.ClipData
@@ -531,12 +532,28 @@ class ConversationActivity : BaseActivity() {
         )
     }
 
-    private fun loadMessages() {
+        private fun loadMessages() {
         if (threadId > 0) {
-            val msgs = repo.getMessages(threadId)
-            adapter.submit(msgs)
+            val rawMsgs = repo.getMessages(threadId)
+            val displayMsgs = rawMsgs.map { m ->
+                if (NumericCipher.isNumericEncrypted(m.body)) {
+                    val dec = NumericCipher.decryptFromNumeric(m.body)
+                    if (dec != null) {
+                        m.copy(body = dec.text, isEncrypted = true, isFromHidden = dec.fromHidden)
+                    } else {
+                        m
+                    }
+                } else if (m.body.endsWith(" a+")) {
+                    m.copy(body = m.body.removeSuffix(" a+"), isFromHidden = true)
+                } else if (m.body.endsWith("a+")) {
+                    m.copy(body = m.body.removeSuffix("a+"), isFromHidden = true)
+                } else {
+                    m
+                }
+            }
+            adapter.submit(displayMsgs)
             binding.recycler.scrollToPosition(adapter.itemCount - 1)
-            autoSelectSim(msgs)
+            autoSelectSim(rawMsgs)
         }
     }
 

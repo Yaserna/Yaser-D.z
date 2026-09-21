@@ -219,12 +219,22 @@ class MainActivity : BaseActivity() {
 
     private enum class Action { DELETE, READ, PIN, ARCHIVE }
 
-        private fun applyToSelection(action: Action) {
+            private fun applyToSelection(action: Action) {
         val ids = adapter.selectedThreadIds()
+        val starredDb = StarredDbHelper.getInstance(this)
+        var protectedCount = 0
         for (id in ids) {
             val addr = allConvos.firstOrNull { it.threadId == id }?.address.orEmpty()
             when (action) {
-                Action.DELETE -> repo.deleteThread(id)
+                Action.DELETE -> {
+                    val isProtected = (addr.isNotBlank() && starredDb.isThreadStarred(addr)) ||
+                            starredDb.getStarredSystemMessageIds(id).isNotEmpty()
+                    if (isProtected) {
+                        protectedCount++
+                    } else {
+                        repo.deleteThread(id)
+                    }
+                }
                 Action.READ -> repo.markThreadRead(id)
                 Action.PIN -> {
                     if (addr.isNotBlank()) secure.togglePin(addr)
@@ -235,6 +245,9 @@ class MainActivity : BaseActivity() {
                     else secure.setArchived(id, !secure.isArchived(id))
                 }
             }
+        }
+        if (protectedCount > 0) {
+            android.widget.Toast.makeText(this, "$protectedCount گفتگوی ستاره‌دار و محافظت‌شده حذف نشدند.", android.widget.Toast.LENGTH_LONG).show()
         }
         adapter.exitSelection()
         refresh()

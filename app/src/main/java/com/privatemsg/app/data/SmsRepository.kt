@@ -1,4 +1,4 @@
-package com.privatemsg.app.data
+﻿package com.privatemsg.app.data
 
 import android.content.ContentValues
 import android.content.Context
@@ -310,11 +310,19 @@ class SmsRepository(private val context: Context) {
     }
 
     /** Move a hidden conversation back into the visible system store. */
-    fun restoreFromHidden(address: String, hiddenDb: HiddenDbHelper) {
+        fun restoreFromHidden(address: String, hiddenDb: HiddenDbHelper) {
+        val isEnc = SecureStore(context).isEncryptionEnabled(address)
         for (m in hiddenDb.getMessages(address)) {
+            val bodyToInsert = if (NumericCipher.isNumericEncrypted(m.body)) {
+                m.body
+            } else if (isEnc) {
+                NumericCipher.encryptToNumeric(m.body, fromHidden = false)
+            } else {
+                m.body
+            }
             val values = ContentValues().apply {
                 put(Telephony.Sms.ADDRESS, m.address)
-                put(Telephony.Sms.BODY, m.body)
+                put(Telephony.Sms.BODY, bodyToInsert)
                 put(Telephony.Sms.DATE, m.date)
                 put(Telephony.Sms.READ, 1)
                 put(Telephony.Sms.TYPE, m.type)
