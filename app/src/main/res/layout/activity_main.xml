@@ -1,371 +1,103 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@color/bg">
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
 
-        <FrameLayout
-            android:layout_width="match_parent"
-            android:layout_height="56dp">
+        <FrameLayout android:layout_width="match_parent" android:layout_height="56dp">
 
-            <ImageButton
-                android:id="@+id/settingsButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_gravity="center_vertical|end"
-                android:layout_marginHorizontal="8dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/settings"
-                android:src="@drawable/ic_gear" />
+            <ImageButton android:id="@+id/settingsButton" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="center_vertical|end" android:layout_marginHorizontal="8dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/settings" android:src="@drawable/ic_gear" />
 
             <!-- Favorites moved here: star icon only (next to the gear). -->
-            <ImageButton
-                android:id="@+id/favoritesButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_gravity="center_vertical|end"
-                android:layout_marginEnd="60dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/favorites_title"
-                android:src="@drawable/ic_star" />
+            <ImageButton android:id="@+id/favoritesButton" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="center_vertical|end" android:layout_marginEnd="60dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/favorites_title" android:src="@drawable/ic_star" />
 
             <!-- Appears (further left) only when an archived chat has a new/unread
                  message; tapping it opens the archive. Kept clear of the star icon. -->
-            <FrameLayout
-                android:id="@+id/archiveButtonWrap"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_gravity="center_vertical|end"
-                android:layout_marginEnd="112dp"
-                android:visibility="gone">
+            <FrameLayout android:id="@+id/archiveButtonWrap" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="center_vertical|end" android:layout_marginEnd="112dp">
 
-                <ImageButton
-                    android:id="@+id/archiveButton"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="@string/archive"
-                    android:src="@drawable/ic_archive" />
+                <ImageButton android:id="@+id/archiveButton" android:layout_width="match_parent" android:layout_height="match_parent" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/archive" android:src="@drawable/ic_archive" />
 
-                <View
-                    android:layout_width="9dp"
-                    android:layout_height="9dp"
-                    android:layout_gravity="top|end"
-                    android:layout_margin="8dp"
-                    android:background="@drawable/star_circle" />
+                <View android:layout_width="9dp" android:layout_height="9dp" android:layout_gravity="top|end" android:layout_margin="8dp" android:background="@drawable/star_circle" android:id="@+id/archiveBadge" android:visibility="gone" />
             </FrameLayout>
 
-            <ImageButton
-                android:id="@+id/selectAllButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_gravity="center_vertical|end"
-                android:layout_marginHorizontal="8dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/select_all"
-                android:src="@drawable/ic_select_all"
-                android:visibility="gone" />
+            <ImageButton android:id="@+id/selectAllButton" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="center_vertical|end" android:layout_marginHorizontal="8dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/select_all" android:src="@drawable/ic_select_all" android:visibility="gone" />
 
-            <ImageButton
-                android:id="@+id/cancelButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_gravity="center_vertical|start"
-                android:layout_marginHorizontal="8dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/cancel"
-                android:src="@drawable/ic_close"
-                android:visibility="gone" />
+            <ImageButton android:id="@+id/cancelButton" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="center_vertical|start" android:layout_marginHorizontal="8dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/cancel" android:src="@drawable/ic_close" android:visibility="gone" />
         </FrameLayout>
 
-        <TextView
-            android:id="@+id/title"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="start"
-            android:paddingHorizontal="20dp"
-            android:paddingTop="4dp"
-            android:paddingBottom="12dp"
-            android:text="@string/app_name"
-            android:textColor="@color/textPrimary"
-            android:textSize="30sp"
-            android:textStyle="bold" />
+        <TextView android:id="@+id/title" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="start" android:paddingHorizontal="20dp" android:paddingTop="4dp" android:paddingBottom="12dp" android:text="@string/app_name" android:textColor="@color/textPrimary" android:textSize="30sp" android:textStyle="bold" />
 
-        <LinearLayout
-            android:id="@+id/searchBar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginHorizontal="16dp"
-            android:layout_marginBottom="8dp"
-            android:background="@drawable/search_pill"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingHorizontal="16dp"
-            android:paddingVertical="6dp">
+        <LinearLayout android:id="@+id/searchBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginHorizontal="16dp" android:layout_marginBottom="8dp" android:background="@drawable/search_pill" android:gravity="center_vertical" android:orientation="horizontal" android:paddingHorizontal="16dp" android:paddingVertical="6dp">
 
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:contentDescription="@string/search_hint"
-                android:src="@drawable/ic_search" />
+            <ImageView android:layout_width="22dp" android:layout_height="22dp" android:contentDescription="@string/search_hint" android:src="@drawable/ic_search" />
 
-            <EditText
-                android:id="@+id/searchInput"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="10dp"
-                android:background="@null"
-                android:gravity="start"
-                android:hint="@string/search_hint"
-                android:inputType="text"
-                android:textColor="@color/textPrimary"
-                android:textColorHint="@color/textSecondary"
-                android:textSize="15sp" />
+            <EditText android:id="@+id/searchInput" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="10dp" android:background="@null" android:gravity="start" android:hint="@string/search_hint" android:inputType="text" android:textColor="@color/textPrimary" android:textColorHint="@color/textSecondary" android:textSize="15sp" />
         </LinearLayout>
 
         <!-- Secret entry: appears only when the exact secret code is typed in search. -->
-        <LinearLayout
-            android:id="@+id/privateEntry"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="?attr/selectableItemBackground"
-            android:clickable="true"
-            android:focusable="true"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingHorizontal="16dp"
-            android:paddingVertical="12dp"
-            android:visibility="gone">
+        <LinearLayout android:id="@+id/privateEntry" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" android:gravity="center_vertical" android:orientation="horizontal" android:paddingHorizontal="16dp" android:paddingVertical="12dp" android:visibility="gone">
 
-            <FrameLayout
-                android:layout_width="44dp"
-                android:layout_height="44dp"
-                android:background="@drawable/star_circle">
+            <FrameLayout android:layout_width="44dp" android:layout_height="44dp" android:background="@drawable/star_circle">
 
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="@string/private_entry"
-                    android:src="@drawable/ic_lock" />
+                <ImageView android:layout_width="22dp" android:layout_height="22dp" android:layout_gravity="center" android:contentDescription="@string/private_entry" android:src="@drawable/ic_lock" />
             </FrameLayout>
 
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginHorizontal="12dp"
-                android:layout_weight="1"
-                android:text="@string/private_entry"
-                android:textColor="@color/textPrimary"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginHorizontal="12dp" android:layout_weight="1" android:text="@string/private_entry" android:textColor="@color/textPrimary" android:textSize="16sp" android:textStyle="bold" />
         </LinearLayout>
 
         <!-- Archive entry: appears only when the archive keyword is typed in search;
              tapping it opens the archive screen. -->
-        <LinearLayout
-            android:id="@+id/archiveEntry"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="?attr/selectableItemBackground"
-            android:clickable="true"
-            android:focusable="true"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingHorizontal="16dp"
-            android:paddingVertical="12dp"
-            android:visibility="gone">
+        <LinearLayout android:id="@+id/archiveEntry" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" android:gravity="center_vertical" android:orientation="horizontal" android:paddingHorizontal="16dp" android:paddingVertical="12dp" android:visibility="gone">
 
-            <FrameLayout
-                android:layout_width="44dp"
-                android:layout_height="44dp"
-                android:background="@drawable/star_circle">
+            <FrameLayout android:layout_width="44dp" android:layout_height="44dp" android:background="@drawable/star_circle">
 
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="@string/archive"
-                    android:src="@drawable/ic_archive" />
+                <ImageView android:layout_width="22dp" android:layout_height="22dp" android:layout_gravity="center" android:contentDescription="@string/archive" android:src="@drawable/ic_archive" />
             </FrameLayout>
 
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginHorizontal="12dp"
-                android:layout_weight="1"
-                android:text="@string/archive"
-                android:textColor="@color/textPrimary"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginHorizontal="12dp" android:layout_weight="1" android:text="@string/archive" android:textColor="@color/textPrimary" android:textSize="16sp" android:textStyle="bold" />
         </LinearLayout>
 
-        <FrameLayout
-            android:layout_width="match_parent"
-            android:layout_height="match_parent">
+        <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
 
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="top|center_horizontal"
-                android:gravity="center_horizontal"
-                android:orientation="vertical"
-                android:paddingTop="48dp">
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="top|center_horizontal" android:gravity="center_horizontal" android:orientation="vertical" android:paddingTop="48dp">
 
-                <ImageView
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:contentDescription="@string/private_folder_title"
-                    android:src="@drawable/ic_lock" />
+                <ImageView android:layout_width="40dp" android:layout_height="40dp" android:contentDescription="@string/private_folder_title" android:src="@drawable/ic_lock" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:text="@string/pull_to_private"
-                    android:textColor="#1A73E8"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="@string/pull_to_private" android:textColor="#1A73E8" android:textSize="13sp" android:textStyle="bold" />
             </LinearLayout>
 
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/recycler"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@color/bg"
-                android:clipToPadding="false"
-                android:paddingBottom="96dp" />
+            <androidx.recyclerview.widget.RecyclerView android:id="@+id/recycler" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg" android:clipToPadding="false" android:paddingBottom="96dp" />
         </FrameLayout>
     </LinearLayout>
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fab"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="22dp"
-        android:contentDescription="@string/new_message"
-        android:src="@drawable/ic_add"
-        app:backgroundTint="@color/accent"
-        app:fabCustomSize="56dp"
-        app:maxImageSize="28dp"
-        app:tint="@android:color/white" />
+    <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/fab" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="bottom|end" android:layout_margin="22dp" android:contentDescription="@string/new_message" android:src="@drawable/ic_add" app:backgroundTint="@color/accent" app:fabCustomSize="56dp" app:maxImageSize="28dp" app:tint="@android:color/white" />
 
-    <LinearLayout
-        android:id="@+id/selectionBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="@color/surface"
-        android:orientation="horizontal"
-        android:paddingVertical="10dp"
-        android:visibility="gone">
+    <LinearLayout android:id="@+id/selectionBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom" android:background="@color/surface" android:orientation="horizontal" android:paddingVertical="10dp" android:visibility="gone">
 
-        <LinearLayout
-            android:id="@+id/actionRead"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:paddingVertical="4dp">
+        <LinearLayout android:id="@+id/actionRead" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:background="?attr/selectableItemBackground" android:gravity="center" android:orientation="vertical" android:paddingVertical="4dp">
 
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:contentDescription="@string/mark_read"
-                android:src="@drawable/ic_mark_read" />
+            <ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="@string/mark_read" android:src="@drawable/ic_mark_read" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/mark_read_short"
-                android:textColor="@color/textSecondary"
-                android:textSize="12sp" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="@string/mark_read_short" android:textColor="@color/textSecondary" android:textSize="12sp" />
         </LinearLayout>
 
-        <LinearLayout
-            android:id="@+id/actionPin"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:paddingVertical="4dp">
+        <LinearLayout android:id="@+id/actionPin" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:background="?attr/selectableItemBackground" android:gravity="center" android:orientation="vertical" android:paddingVertical="4dp">
+             <ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="@string/pin" android:src="@drawable/ic_pin" />
+             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="@string/pin" android:textColor="@color/textSecondary" android:textSize="12sp" />
+         </LinearLayout>
+         <LinearLayout android:id="@+id/actionMute" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:background="?attr/selectableItemBackground" android:gravity="center" android:orientation="vertical" android:paddingVertical="4dp">
+             <TextView android:layout_width="wrap_content" android:layout_height="24dp" android:gravity="center" android:text="🔕" android:textSize="18sp" />
+             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="@string/mute" android:textColor="@color/textSecondary" android:textSize="12sp" />
+         </LinearLayout>
+         <LinearLayout android:id="@+id/actionArchive" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:background="?attr/selectableItemBackground" android:gravity="center" android:orientation="vertical" android:paddingVertical="4dp">
+             <ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="@string/archive" android:src="@drawable/ic_archive" />
+             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="@string/archive" android:textColor="@color/textSecondary" android:textSize="12sp" />
+         </LinearLayout>
 
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:contentDescription="@string/pin"
-                android:src="@drawable/ic_pin" />
+        <LinearLayout android:id="@+id/actionDelete" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:background="?attr/selectableItemBackground" android:gravity="center" android:orientation="vertical" android:paddingVertical="4dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/pin"
-                android:textColor="@color/textSecondary"
-                android:textSize="12sp" />
-        </LinearLayout>
+            <ImageView android:layout_width="24dp" android:layout_height="24dp" android:contentDescription="@string/delete" android:src="@drawable/ic_delete" />
 
-        <LinearLayout
-            android:id="@+id/actionArchive"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:paddingVertical="4dp">
-
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:contentDescription="@string/archive"
-                android:src="@drawable/ic_archive" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/archive"
-                android:textColor="@color/textSecondary"
-                android:textSize="12sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/actionDelete"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:paddingVertical="4dp">
-
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:contentDescription="@string/delete"
-                android:src="@drawable/ic_delete" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/delete"
-                android:textColor="@color/textSecondary"
-                android:textSize="12sp" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="@string/delete" android:textColor="@color/textSecondary" android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 

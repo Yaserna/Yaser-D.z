@@ -103,6 +103,12 @@ class HiddenDbHelper(context: Context) :
     }
 
     @Synchronized
+    fun updateType(id: Long, type: Int) {
+        val values = ContentValues().apply { put("type", type) }
+        writableDatabase.update(TABLE, values, "id = ?", arrayOf(id.toString()))
+    }
+
+    @Synchronized
     fun getConversations(): List<Conversation> {
         val list = mutableListOf<Conversation>()
         val seen = HashSet<String>()

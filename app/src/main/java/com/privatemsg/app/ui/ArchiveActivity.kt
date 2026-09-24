@@ -48,9 +48,8 @@ class ArchiveActivity : BaseActivity() {
 
     private fun refresh() {
         Thread {
-            val archivedIds = secure.getArchived()
             val archived = repo.getConversations()
-                .filter { it.threadId in archivedIds }
+                .filter { secure.isArchived(it.address) }
                 .sortedByDescending { it.date }
             runOnUiThread {
                 adapter.submit(archived)
@@ -62,7 +61,7 @@ class ArchiveActivity : BaseActivity() {
     private fun showRowMenu(conv: Conversation) {
         showListMenu(arrayOf(getString(R.string.unarchive))) { which ->
             if (which == 0) {
-                secure.setArchived(conv.threadId, false)
+                secure.setArchived(conv.address, false)
                 refresh()
             }
         }

@@ -1,4 +1,4 @@
-﻿package com.privatemsg.app.data
+package com.privatemsg.app.data
 
 import android.content.ContentValues
 import android.content.Context
@@ -10,8 +10,8 @@ class SmsRepository(private val context: Context) {
 
     /** Normal conversations, excluding any hidden numbers. */
     fun getConversations(): List<Conversation> {
-        val list = mutableListOf<Conversation>()
-        val seen = HashSet<Long>()
+        val latest = LinkedHashMap<Long, Conversation>()
+        val unreadThreads = HashSet<Long>()
         val hidden = secure.getHiddenNumbers()
         val projection = arrayOf(
             Telephony.Sms._ID,
@@ -37,26 +37,28 @@ class SmsRepository(private val context: Context) {
             val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
             while (c.moveToNext()) {
                 val thread = c.getLong(iThread)
-                if (!seen.add(thread)) continue
+                val type = c.getInt(iType)
+                // A conversation is unread if ANY incoming message in it is unread
+                // (not only when the latest message happens to be the unread one).
+                if (type == Telephony.Sms.MESSAGE_TYPE_INBOX && c.getInt(iRead) == 0) {
+                    unreadThreads.add(thread)
+                }
+                if (latest.containsKey(thread)) continue
                 val address = c.getString(iAddr) ?: ""
                 if (hidden.contains(SecureStore.normalize(address))) continue
-                val type = c.getInt(iType)
-                val isInbox = type == Telephony.Sms.MESSAGE_TYPE_INBOX
-                val unread = isInbox && c.getInt(iRead) == 0
-                list.add(
-                    Conversation(
-                        threadId = thread,
-                        address = address,
-                        snippet = c.getString(iBody) ?: "",
-                        date = c.getLong(iDate),
-                        unread = unread,
-                        // The latest message failed to send → flag the conversation.
-                        failed = type == Telephony.Sms.MESSAGE_TYPE_FAILED
-                    )
+                latest[thread] = Conversation(
+                    threadId = thread,
+                    address = address,
+                    snippet = c.getString(iBody) ?: "",
+                    date = c.getLong(iDate),
+                    unread = false, // set below, after the full scan
+                    isMuted = secure.isMuted(address),
+                    // The latest message failed to send → flag the conversation.
+                    failed = type == Telephony.Sms.MESSAGE_TYPE_FAILED
                 )
             }
         }
-        return list
+        return latest.values.map { it.copy(unread = it.threadId in unreadThreads) }
     }
 
     /** Bodies of the still-unread incoming messages in a thread (oldest → newest). */

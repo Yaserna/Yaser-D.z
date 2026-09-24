@@ -1,4 +1,4 @@
-﻿package com.privatemsg.app.ui
+package com.privatemsg.app.ui
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -82,7 +82,7 @@ class HiddenActivity : BaseActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        hiddenDb = HiddenDbHelper(this)
+        hiddenDb = HiddenDbHelper.getInstance(this)
         secure = SecureStore(this)
         repo = SmsRepository(this)
 

@@ -1,4 +1,4 @@
-﻿package com.privatemsg.app.sms
+package com.privatemsg.app.sms
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -67,7 +67,7 @@ class SmsReceiver : BroadcastReceiver() {
                         return@execute
                     }
 
-                    val hiddenDb = HiddenDbHelper(context)
+                    val hiddenDb = HiddenDbHelper.getInstance(context)
                     hiddenDb.insert(rawAddress, body, date, 1, subId)
 
                     val active = HiddenConversationActivity.activeNormalizedAddress

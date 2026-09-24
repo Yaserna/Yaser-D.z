@@ -1,4 +1,4 @@
-﻿package com.privatemsg.app.sms
+package com.privatemsg.app.sms
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -19,7 +19,21 @@ class SmsStatusReceiver : BroadcastReceiver() {
         if (intent.action == ACTION_HIDDEN_DELIVERED) {
             val id = intent.getLongExtra(EXTRA_HIDDEN_ID, -1)
             if (id >= 0) {
-                HiddenDbHelper(context).updateStatus(id, 0)
+                HiddenDbHelper.getInstance(context).updateStatus(id, 0)
+                context.sendBroadcast(Intent(ACTION_HIDDEN_REFRESH).setPackage(context.packageName))
+            }
+            return
+        }
+
+        // Sent callback for a hidden message: queued → sent (or failed), in the private DB.
+        if (intent.action == ACTION_HIDDEN_SENT) {
+            val id = intent.getLongExtra(EXTRA_HIDDEN_ID, -1)
+            if (id >= 0) {
+                val ok = resultCode == Activity.RESULT_OK
+                HiddenDbHelper.getInstance(context).updateType(
+                    id,
+                    if (ok) Telephony.Sms.MESSAGE_TYPE_SENT else Telephony.Sms.MESSAGE_TYPE_FAILED
+                )
                 context.sendBroadcast(Intent(ACTION_HIDDEN_REFRESH).setPackage(context.packageName))
             }
             return
@@ -59,6 +73,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
         const val ACTION_SENT = "com.privatemsg.app.SMS_SENT"
         const val ACTION_DELIVERED = "com.privatemsg.app.SMS_DELIVERED"
         const val ACTION_HIDDEN_DELIVERED = "com.privatemsg.app.HIDDEN_SMS_DELIVERED"
+        const val ACTION_HIDDEN_SENT = "com.privatemsg.app.HIDDEN_SMS_SENT"
         const val ACTION_HIDDEN_REFRESH = "com.privatemsg.app.HIDDEN_SMS_REFRESH"
         const val ACTION_SMS_REFRESH = "com.privatemsg.app.SMS_REFRESH"
         const val EXTRA_HIDDEN_ID = "hidden_id"

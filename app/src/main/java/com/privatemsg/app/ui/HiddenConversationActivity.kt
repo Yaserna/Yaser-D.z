@@ -1,4 +1,4 @@
-﻿package com.privatemsg.app.ui
+package com.privatemsg.app.ui
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -53,7 +53,7 @@ class HiddenConversationActivity : BaseActivity() {
         setContentView(binding.root)
         binding.navBack.setOnClickListener { finish() }
 
-        hiddenDb = HiddenDbHelper(this)
+        hiddenDb = HiddenDbHelper.getInstance(this)
         address = intent.getStringExtra("address") ?: ""
         binding.recipientRow.visibility = android.view.View.GONE
         binding.attachButton.visibility = android.view.View.GONE
@@ -288,7 +288,10 @@ class HiddenConversationActivity : BaseActivity() {
                         m.subId
                     )
                 }
-                repo.deleteThread(threadId)
+                // Delete exactly the rows we just copied: deleteThread() refuses a
+                // starred thread, which would leave hidden-number messages in the
+                // system store (and re-import them later as duplicates).
+                repo.deleteMessages(publicMsgs.map { it.id })
             }
         } catch (_: Exception) {}
     }
@@ -311,7 +314,7 @@ class HiddenConversationActivity : BaseActivity() {
         val rowId = hiddenDb.insert(address, textToSend, System.currentTimeMillis(), 4, subId)
         val deliveredPi =
             if (SecureStore(this).deliveryReportForSub(subId)) hiddenDeliveryIntent(rowId) else null
-        sendViaSms(address, textToSend, null, deliveredPi)
+        sendViaSms(address, textToSend, hiddenSentIntent(rowId), deliveredPi)
 
         binding.input.setText("")
         SecureStore(this).setDraft(address, "")
@@ -397,6 +400,17 @@ class HiddenConversationActivity : BaseActivity() {
     private fun hiddenDeliveryIntent(rowId: Long): PendingIntent {
         val intent = Intent(this, SmsStatusReceiver::class.java)
             .setAction(SmsStatusReceiver.ACTION_HIDDEN_DELIVERED)
+            .putExtra(SmsStatusReceiver.EXTRA_HIDDEN_ID, rowId)
+        return PendingIntent.getBroadcast(
+            this, rowId.toInt(), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    /** Send callback for a hidden message: queued → sent (or failed) in the private DB. */
+    private fun hiddenSentIntent(rowId: Long): PendingIntent {
+        val intent = Intent(this, SmsStatusReceiver::class.java)
+            .setAction(SmsStatusReceiver.ACTION_HIDDEN_SENT)
             .putExtra(SmsStatusReceiver.EXTRA_HIDDEN_ID, rowId)
         return PendingIntent.getBroadcast(
             this, rowId.toInt(), intent,

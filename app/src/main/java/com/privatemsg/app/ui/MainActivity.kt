@@ -1,4 +1,4 @@
-﻿package com.privatemsg.app.ui
+package com.privatemsg.app.ui
 import com.privatemsg.app.data.StarredDbHelper
 
 import android.Manifest
@@ -154,6 +154,7 @@ class MainActivity : BaseActivity() {
         binding.actionRead.setOnClickListener { applyToSelection(Action.READ) }
         binding.actionPin.setOnClickListener { applyToSelection(Action.PIN) }
         binding.actionArchive.setOnClickListener { applyToSelection(Action.ARCHIVE) }
+        binding.actionMute.setOnClickListener { applyToSelection(Action.MUTE) }
 
         // The archive badge (shown only for unread archived chats) opens the archive.
         binding.archiveButton.setOnClickListener {
@@ -217,9 +218,9 @@ class MainActivity : BaseActivity() {
         startActivity(i)
     }
 
-    private enum class Action { DELETE, READ, PIN, ARCHIVE }
+    private enum class Action { DELETE, READ, PIN, ARCHIVE, MUTE }
 
-            private fun applyToSelection(action: Action) {
+    private fun applyToSelection(action: Action) {
         val ids = adapter.selectedThreadIds()
         val starredDb = StarredDbHelper.getInstance(this)
         var protectedCount = 0
@@ -240,6 +241,9 @@ class MainActivity : BaseActivity() {
                     if (addr.isNotBlank()) secure.togglePin(addr)
                     else secure.togglePin(id)
                 }
+                Action.MUTE -> {
+                    if (addr.isNotBlank()) secure.toggleMute(addr)
+                }
                 Action.ARCHIVE -> {
                     if (addr.isNotBlank()) secure.setArchived(addr, !secure.isArchived(addr))
                     else secure.setArchived(id, !secure.isArchived(id))
@@ -256,7 +260,8 @@ class MainActivity : BaseActivity() {
     private fun updateSelectionUi() {
         val on = adapter.selectionMode
         binding.settingsButton.visibility = if (on) View.GONE else View.VISIBLE
-        if (on) binding.archiveButtonWrap.visibility = View.GONE else updateArchiveBadge()
+        binding.archiveButtonWrap.visibility = if (on) View.GONE else View.VISIBLE
+        updateArchiveBadge()
         binding.selectAllButton.visibility = if (on) View.VISIBLE else View.GONE
         binding.cancelButton.visibility = if (on) View.VISIBLE else View.GONE
         binding.searchBar.visibility = if (on) View.GONE else View.VISIBLE
@@ -412,7 +417,6 @@ class MainActivity : BaseActivity() {
         ) return
         ioExecutor.execute {
             val all = repo.getConversations()
-            val archivedIds = secure.getArchived()
             // 1) The main list (archived chats excluded) shows immediately.
             val main = all.filter { !secure.isArchived(it.address) }
                 .sortedByDescending { secure.isPinned(it.address) }

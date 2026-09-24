@@ -137,5 +137,6 @@
     <string name="select_all">انتخاب همه</string>
     <string name="cancel">لغو</string>
     <string name="pin">الصاق</string>
+    <string name="mute">بی‌صدا</string>
     <string name="n_selected">%1$d مورد انتخاب شد</string>
 </resources>

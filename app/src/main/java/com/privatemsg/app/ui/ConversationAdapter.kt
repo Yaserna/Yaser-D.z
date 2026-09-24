@@ -85,8 +85,10 @@ class ConversationAdapter(
         val ctx = holder.itemView.context
         val display = nameOverride?.invoke(c) ?: contacts.displayFor(c.address)
         holder.binding.name.text = display
-        holder.binding.time.text =
+        val timeText =
             if (c.date > 0) DateUtils.getRelativeTimeSpanString(c.date).toString().toLatinDigits() else ""
+        // A muted conversation is marked here (there is no separate mute icon in the row).
+        holder.binding.time.text = if (c.isMuted) "$timeText 🔕" else timeText
 
         // Unread conversations: dot, bold name, and a brighter snippet.
         holder.binding.unreadDot.visibility = if (c.unread) View.VISIBLE else View.GONE
