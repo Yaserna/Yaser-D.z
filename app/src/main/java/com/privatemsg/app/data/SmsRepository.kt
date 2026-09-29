@@ -129,7 +129,9 @@ class SmsRepository(private val context: Context) {
             put(Telephony.Sms.DATE, System.currentTimeMillis())
             put(Telephony.Sms.READ, 1)
             put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
-            put(Telephony.Sms.STATUS, Telephony.Sms.STATUS_NONE)
+            // This app reads provider status 0 as "delivered" (and the hidden DB uses
+            // -1 for "unknown"), so a fresh row must NOT be written as 0 here.
+            put(Telephony.Sms.STATUS, -1)
             if (subId >= 0) put(Telephony.Sms.SUBSCRIPTION_ID, subId)
         }
         val uri = context.contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)
@@ -363,6 +365,9 @@ class SmsRepository(private val context: Context) {
                 put(Telephony.Sms.DATE, m.date)
                 put(Telephony.Sms.READ, 1)
                 put(Telephony.Sms.TYPE, m.type)
+                // Restored sends must not inherit the provider's default status 0,
+                // which this app shows as "delivered".
+                put(Telephony.Sms.STATUS, -1)
             }
             // Only real incoming messages belong in the inbox; anything the user sent
             // (sent / queued / failed) goes back through the sent table.
