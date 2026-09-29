@@ -289,19 +289,8 @@
             android:contentDescription="@string/app_icon_label" />
     </LinearLayout>
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="16dp"
-        android:paddingBottom="8dp"
-        android:text="@string/section_archive"
-        android:textColor="@color/accent"
-        android:textSize="13sp"
-        android:textStyle="bold" />
-
     <LinearLayout
-        android:id="@+id/archiveKeywordRow"
+        android:id="@+id/aboutRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="?attr/selectableItemBackground"
@@ -310,68 +299,54 @@
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingHorizontal="16dp"
-        android:paddingVertical="12dp">
+        android:paddingTop="16dp"
+        android:paddingBottom="8dp">
 
-        <LinearLayout
+        <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/archive_keyword_label"
-                android:textColor="@color/textPrimary"
-                android:textSize="16sp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="@string/archive_keyword_summary"
-                android:textColor="@color/textSecondary"
-                android:textSize="13sp" />
-        </LinearLayout>
+            android:text="@string/section_about"
+            android:textColor="@color/accent"
+            android:textSize="13sp"
+            android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/archiveKeywordValue"
+            android:id="@+id/aboutArrow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:text="▸"
             android:textColor="@color/accent"
-            android:textSize="15sp" />
+            android:textSize="13sp" />
     </LinearLayout>
 
-    <TextView
+    <LinearLayout
+        android:id="@+id/aboutDetails"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="16dp"
-        android:paddingBottom="8dp"
-        android:text="@string/section_about"
-        android:textColor="@color/accent"
-        android:textSize="13sp"
-        android:textStyle="bold" />
+        android:orientation="vertical"
+        android:visibility="gone">
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="12dp"
-        android:text="@string/credit"
-        android:textColor="@color/textPrimary"
-        android:textSize="16sp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="12dp"
+            android:text="@string/credit"
+            android:textColor="@color/textPrimary"
+            android:textSize="16sp" />
 
-    <TextView
-        android:id="@+id/versionText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="8dp"
-        android:textColor="@color/textSecondary"
-        android:textDirection="locale"
-        android:textSize="13sp" />
+        <TextView
+            android:id="@+id/versionText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="16dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="8dp"
+            android:textColor="@color/textSecondary"
+            android:textDirection="locale"
+            android:textSize="13sp" />
+    </LinearLayout>
 
     <TextView
         android:layout_width="match_parent"

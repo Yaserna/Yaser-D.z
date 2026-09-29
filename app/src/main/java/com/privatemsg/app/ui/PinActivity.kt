@@ -42,12 +42,36 @@ class PinActivity : BaseActivity() {
             updateDots()
         }
         binding.keyOk.setOnClickListener { submit() }
+        showLockout()
 
         // Offer fingerprint unlock (when enabled and we're not creating a new PIN).
         if (!settingUp && secure.fingerprintEnabled && !promptedFingerprint) {
             promptedFingerprint = true
             tryFingerprint()
         }
+    }
+
+    private var lockoutTick: Runnable? = null
+
+    private fun showLockout() {
+        val left = (secure.pinLockUntil() - System.currentTimeMillis()).coerceAtLeast(0L)
+        lockoutTick?.let { binding.root.removeCallbacks(it) }
+        lockoutTick = null
+        if (left == 0L) {
+            binding.error.text = ""
+            return
+        }
+        binding.error.text = getString(R.string.pin_locked, ((left + 999) / 1000).toInt())
+        val tick = Runnable { if (!isFinishing && !isDestroyed) showLockout() }
+        lockoutTick = tick
+        binding.root.postDelayed(tick, 1000L)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // The countdown re-posts itself; drop the pending tick with the screen.
+        lockoutTick?.let { binding.root.removeCallbacks(it) }
+        lockoutTick = null
     }
 
     private fun tryFingerprint() {
@@ -73,6 +97,11 @@ class PinActivity : BaseActivity() {
     }
 
     private fun append(d: Char) {
+        // Guessing is rate limited: while the cooldown runs the keypad does nothing.
+        if (secure.pinLockUntil() > System.currentTimeMillis()) {
+            showLockout()
+            return
+        }
         if (entered.length < 12) entered.append(d)
         binding.error.text = ""
         updateDots()
@@ -85,6 +114,10 @@ class PinActivity : BaseActivity() {
     }
 
     private fun submit() {
+        if (secure.pinLockUntil() > System.currentTimeMillis()) {
+            showLockout()
+            return
+        }
         val pin = entered.toString()
         if (settingUp) {
             if (pin.length < 4) {
@@ -100,12 +133,15 @@ class PinActivity : BaseActivity() {
                 binding.error.setText(R.string.pin_wrong)
                 entered.clear()
                 updateDots()
+                secure.recordPinFailure()
+                showLockout()
             }
         }
     }
 
     private fun openHidden() {
         // A successful unlock re-opens the hidden section.
+        secure.clearPinFailures()
         BaseActivity.hiddenLocked = false
         startActivity(Intent(this, HiddenActivity::class.java))
         finish()

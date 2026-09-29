@@ -69,10 +69,11 @@ class SettingsActivity : BaseActivity() {
         binding.appIconPreview.setImageResource(iconPreviewFor(secure.appIcon))
         binding.appIconRow.setOnClickListener { pickAppIcon(secure) }
 
-        // Archive access keyword (editable).
-        binding.archiveKeywordValue.text = secure.archiveKeyword
-        binding.archiveKeywordRow.setOnClickListener {
-            editArchiveKeyword(secure)
+        // The "About" details stay collapsed until the header is tapped.
+        binding.aboutRow.setOnClickListener {
+            val open = binding.aboutDetails.visibility != android.view.View.VISIBLE
+            binding.aboutDetails.visibility = if (open) android.view.View.VISIBLE else android.view.View.GONE
+            binding.aboutArrow.text = if (open) "▾" else "▸"
         }
 
         // Contact info: tap to dial / email.
@@ -199,32 +200,6 @@ class SettingsActivity : BaseActivity() {
             grid.addView(iv)
         }
         dialog.show()
-    }
-
-    /** Lets the user pick a different word to type in search for opening the archive. */
-    private fun editArchiveKeyword(secure: SecureStore) {
-        val input = android.widget.EditText(this).apply {
-            setText(secure.archiveKeyword)
-            setSelection(text?.length ?: 0)
-        }
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        val container = android.widget.FrameLayout(this).apply {
-            setPadding(pad, pad / 2, pad, 0); addView(input)
-        }
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.archive_keyword_label)
-            .setView(container)
-            .setPositiveButton(R.string.save) { _, _ ->
-                val word = input.text.toString().trim()
-                if (word.isEmpty()) {
-                    android.widget.Toast.makeText(this, R.string.archive_keyword_empty, android.widget.Toast.LENGTH_SHORT).show()
-                } else {
-                    secure.archiveKeyword = word
-                    binding.archiveKeywordValue.text = word
-                }
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
     }
 
     private fun startSafely(intent: android.content.Intent) {

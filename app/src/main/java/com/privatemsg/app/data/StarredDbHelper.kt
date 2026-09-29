@@ -6,8 +6,15 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * Starred = delete-protected messages. Rows from the hidden section keep their
+ * address and body encrypted at rest; public rows are stored as-is, since the same
+ * text already lives in readable form inside the system SMS store.
+ */
 class StarredDbHelper private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
+
+    private val appContext = context.applicationContext
 
     private val systemStarredCache = ConcurrentHashMap.newKeySet<Long>()
     private val hiddenStarredCache = ConcurrentHashMap.newKeySet<Long>()
@@ -72,12 +79,15 @@ class StarredDbHelper private constructor(context: Context) :
         else systemStarredCache.contains(messageId)
     }
 
+    /**
+     * Whole-conversation protection. Nothing writes it in this build any more, but
+     * rows saved by an older version must keep protecting their threads, so the
+     * check stays until that data is gone.
+     */
     fun isThreadStarred(address: String): Boolean {
         if (address.isBlank()) return false
         return starredThreadsAddressCache.contains(SecureStore.normalize(address))
     }
-
-    fun isThreadStarred(threadId: Long): Boolean = false
 
     @Synchronized
     fun toggleThreadStar(address: String): Boolean {
@@ -97,8 +107,6 @@ class StarredDbHelper private constructor(context: Context) :
             true
         }
     }
-
-    fun toggleThreadStar(threadId: Long, address: String): Boolean = toggleThreadStar(address)
 
     @Synchronized
     fun toggleStar(
@@ -131,8 +139,8 @@ class StarredDbHelper private constructor(context: Context) :
             put("message_id", messageId)
             put("is_hidden", if (isHidden) 1 else 0)
             put("thread_id", threadId)
-            put("address", address)
-            put("body", body)
+            put("address", if (isHidden) DbCipher.encrypt(appContext, address) else address)
+            put("body", if (isHidden) DbCipher.encrypt(appContext, body) else body)
             put("date", date)
         }
         writableDatabase.insertWithOnConflict(TABLE, null, values, SQLiteDatabase.CONFLICT_REPLACE)
@@ -160,26 +168,6 @@ class StarredDbHelper private constructor(context: Context) :
             null, null, null
         )?.use { c ->
             while (c.moveToNext()) set.add(c.getLong(0))
-        }
-        return set
-    }
-
-    @Synchronized
-    fun getStarredHiddenMessageIds(address: String): Set<Long> {
-        val target = SecureStore.normalize(address)
-        val set = mutableSetOf<Long>()
-        readableDatabase.query(
-            TABLE,
-            arrayOf("message_id", "address"),
-            "is_hidden = 1",
-            null, null, null, null
-        )?.use { c ->
-            while (c.moveToNext()) {
-                val addr = c.getString(1) ?: ""
-                if (SecureStore.normalize(addr) == target) {
-                    set.add(c.getLong(0))
-                }
-            }
         }
         return set
     }

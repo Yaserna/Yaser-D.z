@@ -13,7 +13,18 @@ data class ContactItem(val name: String, val number: String) {
 class ContactSuggestAdapter(context: Context) :
     ArrayAdapter<ContactItem>(context, android.R.layout.simple_dropdown_item_1line) {
 
-    private val all: List<ContactItem> = loadContacts(context)
+    // Reading every contact is an unbounded query: it must never run on the UI thread.
+    @Volatile
+    private var all: List<ContactItem> = emptyList()
+
+    init {
+        val appContext = context.applicationContext
+        ioExecutor.execute { all = loadContacts(appContext) }
+    }
+
+    companion object {
+        private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    }
 
     private fun loadContacts(context: Context): List<ContactItem> {
         val list = mutableListOf<ContactItem>()

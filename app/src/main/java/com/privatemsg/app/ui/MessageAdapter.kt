@@ -4,7 +4,6 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.LinearLayout
 import androidx.recyclerview.widget.RecyclerView
 import com.privatemsg.app.R
 import com.privatemsg.app.data.Message
@@ -90,7 +89,7 @@ class MessageAdapter(
         val onBubble = if (isLight(bubbleColor)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
         holder.binding.text.setTextColor(onBubble)
         // Sent messages on the right (START in RTL), received on the left (END).
-        (holder.binding.root as LinearLayout).gravity =
+        holder.binding.root.gravity =
             if (sent) Gravity.START else Gravity.END
 
         val delivered = sent && m.status == 0

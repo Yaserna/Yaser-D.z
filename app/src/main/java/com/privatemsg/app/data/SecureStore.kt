@@ -14,15 +14,47 @@ class SecureStore(context: Context) {
         val salt = newSalt()
         prefs.edit()
             .putString(KEY_PIN_SALT, salt)
-            .putString(KEY_PIN_HASH, hash(pin.toLatinDigits(), salt))
+            .putString(KEY_PIN_HASH, derive(pin.toLatinDigits(), salt, PIN_ITERATIONS))
+            .putInt(KEY_PIN_ITERATIONS, PIN_ITERATIONS)
+            .remove(KEY_PIN_FAILS)
+            .remove(KEY_PIN_LOCK_UNTIL)
             .apply()
     }
 
     fun checkPin(pin: String): Boolean {
         val salt = prefs.getString(KEY_PIN_SALT, null) ?: return false
         val stored = prefs.getString(KEY_PIN_HASH, null) ?: return false
-        val computed = hash(pin.toLatinDigits(), salt)
-        return MessageDigest.isEqual(stored.toByteArray(Charsets.UTF_8), computed.toByteArray(Charsets.UTF_8))
+        val iterations = prefs.getInt(KEY_PIN_ITERATIONS, 0)
+        val computed = derive(pin.toLatinDigits(), salt, iterations)
+        val ok = MessageDigest.isEqual(stored.toByteArray(Charsets.UTF_8), computed.toByteArray(Charsets.UTF_8))
+        if (ok && iterations == 0) {
+            // A PIN stored by an older build: transparently re-hash it with the
+            // slower key derivation now that the PIN is known to be correct.
+            setPin(pin)
+        }
+        return ok
+    }
+
+    /**
+     * Cooldown until which the code is refused everywhere - on the unlock screen and in
+     * the search box. Only wrong taps on the unlock screen extend it: a parent searching
+     * with an ordinary phone number must never be locked out of their own app.
+     */
+    fun pinLockUntil(): Long = prefs.getLong(KEY_PIN_LOCK_UNTIL, 0L)
+
+    fun recordPinFailure(): Int {
+        val fails = prefs.getInt(KEY_PIN_FAILS, 0) + 1
+        val edit = prefs.edit().putInt(KEY_PIN_FAILS, fails)
+        if (fails >= PIN_FAIL_LIMIT) {
+            val waitMs = PIN_BASE_WAIT_MS * (1L shl (fails - PIN_FAIL_LIMIT).coerceAtMost(4))
+            edit.putLong(KEY_PIN_LOCK_UNTIL, System.currentTimeMillis() + waitMs)
+        }
+        edit.apply()
+        return fails
+    }
+
+    fun clearPinFailures() {
+        prefs.edit().remove(KEY_PIN_FAILS).remove(KEY_PIN_LOCK_UNTIL).apply()
     }
 
     var decoyName: String
@@ -97,6 +129,14 @@ class SecureStore(context: Context) {
         return prefs.getStringSet(KEY_PINNED_ADDR, emptySet())?.contains(normalize(address)) == true
     }
 
+    fun setPinned(address: String, pinned: Boolean) {
+        if (address.isBlank()) return
+        val norm = normalize(address)
+        val set = (prefs.getStringSet(KEY_PINNED_ADDR, emptySet()) ?: emptySet()).toMutableSet()
+        if (pinned) set.add(norm) else set.remove(norm)
+        prefs.edit().putStringSet(KEY_PINNED_ADDR, set).apply()
+    }
+
     fun togglePin(address: String): Boolean {
         if (address.isBlank()) return false
         val norm = normalize(address)
@@ -145,10 +185,6 @@ class SecureStore(context: Context) {
 
     fun getArchived(): Set<Long> =
         prefs.getStringSet(KEY_ARCHIVED, emptySet())?.mapNotNull { it.toLongOrNull() }?.toSet() ?: emptySet()
-
-    var archiveKeyword: String
-        get() = prefs.getString(KEY_ARCHIVE_WORD, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_ARCHIVE_WORD
-        set(v) = prefs.edit().putString(KEY_ARCHIVE_WORD, v.trim()).apply()
 
     var deliveryReportEnabled: Boolean
         get() = prefs.getBoolean(KEY_DELIVERY, true)
@@ -274,6 +310,12 @@ class SecureStore(context: Context) {
     companion object {
         private const val KEY_PIN_HASH = "pin_hash"
         private const val KEY_PIN_SALT = "pin_salt"
+        private const val KEY_PIN_ITERATIONS = "pin_iterations"
+        private const val KEY_PIN_FAILS = "pin_fails"
+        private const val KEY_PIN_LOCK_UNTIL = "pin_lock_until"
+        private const val PIN_ITERATIONS = 20000
+        private const val PIN_FAIL_LIMIT = 5
+        private const val PIN_BASE_WAIT_MS = 30_000L
         private const val KEY_DECOY_NAME = "decoy_name"
         private const val KEY_DECOY_TEXT = "decoy_text"
         private const val KEY_DECOY_TARGET = "decoy_target"
@@ -282,8 +324,6 @@ class SecureStore(context: Context) {
         private const val KEY_PINNED_ADDR = "pinned_addresses"
         private const val KEY_ARCHIVED = "archived_threads"
         private const val KEY_ARCHIVED_ADDR = "archived_addresses"
-        private const val KEY_ARCHIVE_WORD = "archive_keyword"
-        const val DEFAULT_ARCHIVE_WORD = "بایگانی"
         private const val KEY_DELIVERY = "delivery_report"
         private const val KEY_FONT_SCALE = "font_scale"
         private const val KEY_UI_SCALE = "ui_scale"
@@ -328,10 +368,27 @@ class SecureStore(context: Context) {
             return bytes.joinToString("") { "%02x".format(it) }
         }
 
+        /** Old builds stored a single salted SHA-256; that maps to iterations = 0. */
         private fun hash(pin: String, salt: String): String {
             val md = MessageDigest.getInstance("SHA-256")
             val out = md.digest((salt + pin).toByteArray(Charsets.UTF_8))
             return out.joinToString("") { "%02x".format(it) }
+        }
+
+        private fun derive(pin: String, salt: String, iterations: Int): String {
+            if (iterations <= 0) return hash(pin, salt)
+            val keySpec = javax.crypto.spec.PBEKeySpec(
+                pin.toCharArray(),
+                salt.toByteArray(Charsets.UTF_8),
+                iterations,
+                256
+            )
+            val factory = try {
+                javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            } catch (_: Exception) {
+                javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
+            }
+            return factory.generateSecret(keySpec).encoded.joinToString("") { "%02x".format(it) }
         }
     }
 }

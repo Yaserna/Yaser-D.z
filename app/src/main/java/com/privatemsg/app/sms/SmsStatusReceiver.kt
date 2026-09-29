@@ -18,7 +18,8 @@ class SmsStatusReceiver : BroadcastReceiver() {
         // Delivery report for a hidden message: update the private DB (no provider Uri).
         if (intent.action == ACTION_HIDDEN_DELIVERED) {
             val id = intent.getLongExtra(EXTRA_HIDDEN_ID, -1)
-            if (id >= 0) {
+            // A non-zero result code means the network reported a failed delivery.
+            if (id >= 0 && resultCode == Activity.RESULT_OK) {
                 HiddenDbHelper.getInstance(context).updateStatus(id, 0)
                 context.sendBroadcast(Intent(ACTION_HIDDEN_REFRESH).setPackage(context.packageName))
             }
@@ -41,6 +42,8 @@ class SmsStatusReceiver : BroadcastReceiver() {
 
         val uri = intent.data ?: return
         val failed = intent.action == ACTION_SENT && resultCode != Activity.RESULT_OK
+        // A delivery report only means "delivered" when the network confirms it.
+        if (intent.action == ACTION_DELIVERED && resultCode != Activity.RESULT_OK) return
         val values = ContentValues()
         when (intent.action) {
             ACTION_SENT -> values.put(

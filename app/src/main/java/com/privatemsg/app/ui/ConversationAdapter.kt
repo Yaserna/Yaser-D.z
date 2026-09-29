@@ -33,7 +33,11 @@ class ConversationAdapter(
             override fun getOldListSize(): Int = oldList.size
             override fun getNewListSize(): Int = list.size
             override fun areItemsTheSame(oldPos: Int, newPos: Int): Boolean =
-                oldList[oldPos].threadId == list[newPos].threadId
+                // threadId alone is not an identity: the hidden list has no provider
+                // thread and every row would otherwise look like the same item, which
+                // makes DiffUtil move data between the wrong numbers.
+                oldList[oldPos].threadId == list[newPos].threadId &&
+                    oldList[oldPos].address == list[newPos].address
             override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean =
                 oldList[oldPos] == list[newPos]
         })

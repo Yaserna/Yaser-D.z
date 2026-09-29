@@ -24,7 +24,6 @@ import androidx.core.widget.addTextChangedListener
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.privatemsg.app.R
-import com.privatemsg.app.data.FavoritesDbHelper
 import com.privatemsg.app.data.Message
 import com.privatemsg.app.data.SecureStore
 import com.privatemsg.app.data.SimHelper
@@ -43,6 +42,20 @@ class ConversationActivity : BaseActivity() {
     private var sims: List<SimHelper.Sim> = emptyList()
     private var simIndex: Int = 0
     private var pickedNumber: String? = null
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** The blocking "working..." dialog, if one is showing (dismissed with the screen). */
+    private var busyDialog: android.app.Dialog? = null
+
+    /** Runs [task] on this screen's worker thread; false if the screen is already gone. */
+    private fun runIo(task: () -> Unit): Boolean {
+        return try {
+            ioExecutor.execute(task)
+            true
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            false
+        }
+    }
 
     companion object {
         /** Normalized address of the conversation currently open on screen (or null). */
@@ -102,15 +115,21 @@ class ConversationActivity : BaseActivity() {
 
     /** Loads recent conversations to suggest as recipients while composing. */
     private fun loadRecents() {
-        Thread {
-            val secure = SecureStore(this)
-            // Only conversations I recently opened, newest first, at most 3.
-            val convos = repo.getConversations()
-                .filter { secure.openedAt(it.address) > 0L }
-                .sortedByDescending { secure.openedAt(it.address) }
-                .take(3)
-            runOnUiThread { recentsAdapter?.submit(convos) }
-        }.start()
+        runIo {
+            try {
+                val secure = SecureStore(this)
+                // Only conversations I recently opened, newest first, at most 3.
+                val convos = repo.getConversations()
+                    .filter { secure.openedAt(it.address) > 0L }
+                    .sortedByDescending { secure.openedAt(it.address) }
+                    .take(3)
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) recentsAdapter?.submit(convos)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ConversationActivity", "recents load failed", e)
+            }
+        }
     }
 
     private val pickContact = registerForActivityResult(
@@ -260,6 +279,17 @@ class ConversationActivity : BaseActivity() {
             IntentFilter(SmsStatusReceiver.ACTION_SMS_REFRESH),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+
+        // Back leaves selection mode first, otherwise it closes the screen. Registered
+        // with this activity's lifecycle, so it can never outlive the window.
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : androidx.activity.OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (adapter.selectionMode) adapter.exitSelection() else finish()
+                }
+            }
+        )
     }
 
     private val refreshReceiver = object : BroadcastReceiver() {
@@ -312,6 +342,10 @@ class ConversationActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        ioExecutor.shutdown()
+        // A progress dialog whose worker outlives the screen leaks its window.
+        try { busyDialog?.dismiss() } catch (_: Exception) {}
+        busyDialog = null
         contentResolver.unregisterContentObserver(smsObserver)
         try { unregisterReceiver(refreshReceiver) } catch (_: Exception) {}
     }
@@ -414,12 +448,16 @@ class ConversationActivity : BaseActivity() {
             .setCancelable(false)
             .create()
         dialog.show()
+        busyDialog = dialog
 
-        java.util.concurrent.Executors.newSingleThreadExecutor().execute {
+        val started = runIo {
             try {
                 repo.deleteMessages(unstarred.map { it.id })
+            } catch (e: Exception) {
+                android.util.Log.e("ConversationActivity", "delete failed", e)
             } finally {
                 runOnUiThread {
+                    if (busyDialog === dialog) busyDialog = null
                     try { dialog.dismiss() } catch (_: Exception) {}
                     if (starred.isNotEmpty()) {
                         Toast.makeText(this, "${starred.size} پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
@@ -429,16 +467,16 @@ class ConversationActivity : BaseActivity() {
                 }
             }
         }
+        if (!started) {
+            if (busyDialog === dialog) busyDialog = null
+            try { dialog.dismiss() } catch (_: Exception) {}
+        }
     }
 
     private fun copySelected() {
         val text = adapter.selectedMessages().joinToString("\n") { it.body }
         if (text.isNotEmpty()) copyText(text)
         adapter.exitSelection()
-    }
-
-    override fun onBackPressed() {
-        if (adapter.selectionMode) adapter.exitSelection() else super.onBackPressed()
     }
 
     private fun prefillLocation() {
@@ -569,11 +607,23 @@ class ConversationActivity : BaseActivity() {
     }
 
         private fun loadMessages() {
-        if (threadId > 0) {
-            val msgs = repo.getMessages(threadId)
-            adapter.submit(msgs)
-            binding.recycler.scrollToPosition(adapter.itemCount - 1)
-            autoSelectSim(msgs)
+        val id = threadId
+        if (id <= 0) return
+        // Reading a thread is a provider query: it can take long enough to drop
+        // frames, so it never runs on the UI thread.
+        runIo {
+            val msgs = try {
+                repo.getMessages(id)
+            } catch (e: Exception) {
+                android.util.Log.e("ConversationActivity", "load failed", e)
+                emptyList()
+            }
+            runOnUiThread {
+                if (isFinishing || threadId != id) return@runOnUiThread
+                adapter.submit(msgs)
+                binding.recycler.scrollToPosition(adapter.itemCount - 1)
+                autoSelectSim(msgs)
+            }
         }
     }
 

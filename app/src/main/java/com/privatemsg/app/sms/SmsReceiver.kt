@@ -107,6 +107,10 @@ class SmsReceiver : BroadcastReceiver() {
                         Notifier.vibrateTiny(context)
                     }
                 }
+            } catch (e: Exception) {
+                // An unhandled error on this thread would kill the process and drop the
+                // message for good. Swallow it; the system still holds the SMS on the SIM.
+                android.util.Log.e(TAG, "incoming sms handling failed", e)
             } finally {
                 pendingResult.finish()
             }
@@ -114,6 +118,7 @@ class SmsReceiver : BroadcastReceiver() {
     }
 
     companion object {
+        private const val TAG = "SmsReceiver"
         private val asyncExecutor = Executors.newSingleThreadExecutor()
     }
 }

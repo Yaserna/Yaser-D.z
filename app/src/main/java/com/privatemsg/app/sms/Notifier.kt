@@ -22,6 +22,9 @@ object Notifier {
     private const val DECOY_CHANNEL_ID = "decoy_sms_silent"
     private const val DECOY_SOUND_CHANNEL_ID = "decoy_sms_sound"
 
+    /** MMS notices are grouped per hour so a burst of them cannot flood the shade. */
+    private const val HOUR_WINDOW_MS = 3_600_000L
+
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -162,6 +165,36 @@ object Notifier {
         NotificationManagerCompat.from(context).cancel(address.hashCode())
     }
 
+    /**
+     * An MMS arrived but this build cannot open media messages yet. Say so plainly,
+     * without a sender name or any content, so the notice is identical for every number.
+     */
+    fun showMmsArrived(context: Context) {
+        ensureChannel(context)
+        val notifId = ("mms_" + (System.currentTimeMillis() / HOUR_WINDOW_MS)).hashCode()
+        val tapPi = PendingIntent.getActivity(
+            context, notifId,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_message)
+            .setColor(accentColor(context))
+            .setContentTitle(context.getString(R.string.mms_arrived_title))
+            .setContentText(context.getString(R.string.mms_arrived_text))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(context.getString(R.string.mms_arrived_text)))
+            .setAutoCancel(true)
+            .setContentIntent(tapPi)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setDefaults(NotificationCompat.DEFAULT_VIBRATE)
+        }
+        notify(context, notifId, builder)
+        vibrateTiny(context)
+    }
+
     fun showSendFailed(context: Context, address: String) {
         ensureChannel(context)
         val notifId = ("failed_" + address).hashCode()
@@ -191,14 +224,14 @@ object Notifier {
     }
 
     fun vibrateTiny(context: Context) {
-        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE)
-                as android.os.VibratorManager).defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
-        }
         try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE)
+                    as? android.os.VibratorManager)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            } ?: return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 vibrator.vibrate(
                     android.os.VibrationEffect.createOneShot(

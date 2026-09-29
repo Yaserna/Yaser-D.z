@@ -19,11 +19,11 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.privatemsg.app.R
 import com.privatemsg.app.data.ContactsHelper
-import com.privatemsg.app.data.FavoritesDbHelper
 import com.privatemsg.app.data.HiddenDbHelper
 import com.privatemsg.app.data.Message
 import com.privatemsg.app.data.SecureStore
 import com.privatemsg.app.data.SimHelper
+import com.privatemsg.app.data.StarredDbHelper
 import com.privatemsg.app.databinding.ActivityConversationBinding
 import com.privatemsg.app.data.NumericCipher
 import com.privatemsg.app.data.SmsRepository
@@ -72,7 +72,8 @@ class HiddenConversationActivity : BaseActivity() {
             onNumberClick = { showNumberMenu(it) },
             onSelectionChanged = { updateSelectionUi() },
             sentColor = colorStore.sentBubbleColor,
-            receivedColor = colorStore.receivedBubbleColor
+            receivedColor = colorStore.receivedBubbleColor,
+            isStarred = { StarredDbHelper.getInstance(this).isStarred(it.id, isHidden = true) }
         )
         binding.recycler.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         binding.recycler.adapter = adapter
@@ -96,6 +97,16 @@ class HiddenConversationActivity : BaseActivity() {
             IntentFilter(SmsStatusReceiver.ACTION_HIDDEN_REFRESH),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+
+        // Back leaves selection mode first, otherwise it closes the screen.
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : androidx.activity.OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (adapter.selectionMode) adapter.exitSelection() else finish()
+                }
+            }
+        )
     }
 
     private val refreshReceiver = object : BroadcastReceiver() {
@@ -111,6 +122,7 @@ class HiddenConversationActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        ioExecutor.shutdown()
         try {
             unregisterReceiver(refreshReceiver)
         } catch (e: Exception) {
@@ -119,9 +131,11 @@ class HiddenConversationActivity : BaseActivity() {
     }
 
     private fun showMessageMenu(m: Message) {
+        val starredDb = StarredDbHelper.getInstance(this)
+        val isStarredMsg = starredDb.isStarred(m.id, isHidden = true)
         val options = arrayOf(
             getString(R.string.choose),
-            getString(R.string.add_favorite),
+            if (isStarredMsg) "حذف ستاره" else "ستاره‌دار کردن (محافظت از حذف)",
             getString(R.string.copy),
             getString(R.string.delete),
             getString(R.string.details)
@@ -130,8 +144,21 @@ class HiddenConversationActivity : BaseActivity() {
             when (which) {
                 0 -> adapter.startSelection(m)
                 1 -> {
-                    FavoritesDbHelper(this).add(m.address, m.body, m.date)
-                    Toast.makeText(this, R.string.favorite_added, Toast.LENGTH_SHORT).show()
+                    val newlyStarred = starredDb.toggleStar(
+                        messageId = m.id,
+                        isHidden = true,
+                        threadId = 0,
+                        address = m.address,
+                        body = m.body,
+                        date = m.date
+                    )
+                    Toast.makeText(
+                        this,
+                        if (newlyStarred) "این پیام ستاره‌دار شد و از حذف محافظت می‌شود."
+                        else "ستاره حذف شد.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    loadMessages()
                 }
                 2 -> {
                     val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -139,8 +166,13 @@ class HiddenConversationActivity : BaseActivity() {
                     Toast.makeText(this, R.string.copied, Toast.LENGTH_SHORT).show()
                 }
                 3 -> {
-                    hiddenDb.deleteById(m.id)
-                    loadMessages()
+                    // A starred hidden message is protected exactly like a public one.
+                    if (isStarredMsg) {
+                        Toast.makeText(this, "این پیام ستاره‌دار است و محافظت شده است.", Toast.LENGTH_LONG).show()
+                    } else {
+                        hiddenDb.deleteById(m.id)
+                        loadMessages()
+                    }
                 }
                 4 -> {
                     val date = DateUtils.formatDateTime(
@@ -166,9 +198,16 @@ class HiddenConversationActivity : BaseActivity() {
     }
 
     private fun deleteSelected() {
-        adapter.selectedMessages().forEach { hiddenDb.deleteById(it.id) }
+        val selected = adapter.selectedMessages()
+        val starredDb = StarredDbHelper.getInstance(this)
+        val protectedCount = selected.count { starredDb.isStarred(it.id, isHidden = true) }
+        selected.filterNot { starredDb.isStarred(it.id, isHidden = true) }
+            .forEach { hiddenDb.deleteById(it.id) }
         adapter.exitSelection()
         loadMessages()
+        if (protectedCount > 0) {
+            Toast.makeText(this, "$protectedCount پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun copySelected() {
@@ -179,10 +218,6 @@ class HiddenConversationActivity : BaseActivity() {
             Toast.makeText(this, R.string.copied, Toast.LENGTH_SHORT).show()
         }
         adapter.exitSelection()
-    }
-
-    override fun onBackPressed() {
-        if (adapter.selectionMode) adapter.exitSelection() else super.onBackPressed()
     }
 
     override fun onResume() {
@@ -204,27 +239,49 @@ class HiddenConversationActivity : BaseActivity() {
         if (address.isNotEmpty()) SecureStore(this).setDraft(address, binding.input.text.toString())
     }
 
-        private fun loadMessages() {
-        val rawMsgs = hiddenDb.getMessages(address)
-        val displayMsgs = rawMsgs.map { m ->
-            if (NumericCipher.isNumericEncrypted(m.body)) {
-                val dec = NumericCipher.decryptFromNumeric(m.body)
-                if (dec != null) {
-                    m.copy(body = dec.text, isEncrypted = true, isFromHidden = dec.fromHidden)
+    private fun loadMessages() {
+        // Reading and decrypting the private table is disk + crypto work, so it happens
+        // on a worker thread; only the finished list is handed to the recycler.
+        runIo {
+            val rawMsgs = try {
+                hiddenDb.getMessages(address)
+            } catch (e: Exception) {
+                android.util.Log.e("HiddenConversation", "load failed", e)
+                emptyList()
+            }
+            val displayMsgs = rawMsgs.map { m ->
+                if (NumericCipher.isNumericEncrypted(m.body)) {
+                    val dec = NumericCipher.decryptFromNumeric(m.body)
+                    if (dec != null) {
+                        m.copy(body = dec.text, isEncrypted = true, isFromHidden = dec.fromHidden)
+                    } else {
+                        m
+                    }
+                } else if (m.body.endsWith(" a+")) {
+                    m.copy(body = m.body.removeSuffix(" a+"), isFromHidden = true)
+                } else if (m.body.endsWith("a+")) {
+                    m.copy(body = m.body.removeSuffix("a+"), isFromHidden = true)
                 } else {
                     m
                 }
-            } else if (m.body.endsWith(" a+")) {
-                m.copy(body = m.body.removeSuffix(" a+"), isFromHidden = true)
-            } else if (m.body.endsWith("a+")) {
-                m.copy(body = m.body.removeSuffix("a+"), isFromHidden = true)
-            } else {
-                m
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                adapter.submit(displayMsgs)
+                binding.recycler.scrollToPosition(adapter.itemCount - 1)
+                autoSelectSim(rawMsgs)
             }
         }
-        adapter.submit(displayMsgs)
-        binding.recycler.scrollToPosition(adapter.itemCount - 1)
-        autoSelectSim(rawMsgs)
+    }
+
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** Queues [task]; false when the screen is already gone and the worker is stopped. */
+    private fun runIo(task: () -> Unit): Boolean = try {
+        ioExecutor.execute(task)
+        true
+    } catch (_: java.util.concurrent.RejectedExecutionException) {
+        false
     }
 
     /** Reply SIM follows the SIM of the most recent received message (manual change still works). */

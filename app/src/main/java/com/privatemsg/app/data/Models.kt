@@ -26,3 +26,6 @@ data class Message(
     val isEncrypted: Boolean = false,
     val isFromHidden: Boolean = false
 )
+
+/** One starred (protected) message shown on the favorites screen. */
+data class Favorite(val id: Long, val address: String, val body: String, val date: Long)

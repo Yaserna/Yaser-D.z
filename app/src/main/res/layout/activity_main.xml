@@ -10,8 +10,8 @@
             <!-- Favorites moved here: star icon only (next to the gear). -->
             <ImageButton android:id="@+id/favoritesButton" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="center_vertical|end" android:layout_marginEnd="60dp" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/favorites_title" android:src="@drawable/ic_star" />
 
-            <!-- Appears (further left) only when an archived chat has a new/unread
-                 message; tapping it opens the archive. Kept clear of the star icon. -->
+            <!-- Archive button: always visible (further left of the star icon) and opens
+                 the archive; the small dot appears only when an archived chat is unread. -->
             <FrameLayout android:id="@+id/archiveButtonWrap" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="center_vertical|end" android:layout_marginEnd="112dp">
 
                 <ImageButton android:id="@+id/archiveButton" android:layout_width="match_parent" android:layout_height="match_parent" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/archive" android:src="@drawable/ic_archive" />
@@ -42,18 +42,6 @@
             </FrameLayout>
 
             <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginHorizontal="12dp" android:layout_weight="1" android:text="@string/private_entry" android:textColor="@color/textPrimary" android:textSize="16sp" android:textStyle="bold" />
-        </LinearLayout>
-
-        <!-- Archive entry: appears only when the archive keyword is typed in search;
-             tapping it opens the archive screen. -->
-        <LinearLayout android:id="@+id/archiveEntry" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" android:gravity="center_vertical" android:orientation="horizontal" android:paddingHorizontal="16dp" android:paddingVertical="12dp" android:visibility="gone">
-
-            <FrameLayout android:layout_width="44dp" android:layout_height="44dp" android:background="@drawable/star_circle">
-
-                <ImageView android:layout_width="22dp" android:layout_height="22dp" android:layout_gravity="center" android:contentDescription="@string/archive" android:src="@drawable/ic_archive" />
-            </FrameLayout>
-
-            <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginHorizontal="12dp" android:layout_weight="1" android:text="@string/archive" android:textColor="@color/textPrimary" android:textSize="16sp" android:textStyle="bold" />
         </LinearLayout>
 
         <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">

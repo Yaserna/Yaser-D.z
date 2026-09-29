@@ -57,10 +57,6 @@
     <string name="archive">بایگانی</string>
     <string name="archived_toast">به بایگانی رفت</string>
     <string name="unarchived_toast">از بایگانی خارج شد</string>
-    <string name="section_archive">بایگانی</string>
-    <string name="archive_keyword_label">کلمه‌ی ورود به بایگانی</string>
-    <string name="archive_keyword_summary">این کلمه را در نوار جستجو بنویسید تا بایگانی باز شود</string>
-    <string name="archive_keyword_empty">کلمه نمی‌تواند خالی باشد</string>
     <string name="archive_empty">بایگانی خالی است</string>
     <string name="unarchive">خروج از بایگانی</string>
     <string name="open_archive">باز کردن بایگانی</string>
@@ -102,6 +98,7 @@
     <string name="pin_enter">رمز را وارد کنید</string>
     <string name="pin_too_short">رمز باید حداقل ۴ رقم باشد</string>
     <string name="pin_wrong">رمز اشتباه است</string>
+    <string name="pin_locked">چند بار اشتباه وارد کردید؛ %1$d ثانیه صبر کنید</string>
     <string name="change_pin">تغییر رمز</string>
     <string name="pin_changed">رمز تغییر کرد</string>
     <string name="fingerprint_unlock">بازگشایی با اثر انگشت</string>
@@ -129,8 +126,8 @@
     <string name="details_body">شماره: %1$s\nتاریخ: %2$s</string>
     <string name="favorites_title">موارد پسندیده</string>
     <string name="favorites_empty">هنوز پیامی به موارد پسندیده اضافه نشده</string>
-    <string name="add_favorite">افزودن به موارد پسندیده</string>
-    <string name="favorite_added">به موارد پسندیده اضافه شد</string>
+    <string name="mms_arrived_title">پیام جدید</string>
+    <string name="mms_arrived_text">یک پیام تصویری یا صوتی رسید؛ باز کردن این نوع پیام‌ها هنوز در این برنامه پیاده نشده است.</string>
     <string name="delete_conversation">حذف گفتگو</string>
     <string name="mark_read">علامت‌گذاری به‌عنوان خوانده‌شده</string>
     <string name="mark_read_short">خوانده شد</string>

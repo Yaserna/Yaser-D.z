@@ -18,6 +18,7 @@ class ArchiveActivity : BaseActivity() {
     private lateinit var repo: SmsRepository
     private lateinit var secure: SecureStore
     private lateinit var adapter: ConversationAdapter
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,15 +48,33 @@ class ArchiveActivity : BaseActivity() {
     }
 
     private fun refresh() {
-        Thread {
-            val archived = repo.getConversations()
-                .filter { secure.isArchived(it.address) }
-                .sortedByDescending { it.date }
-            runOnUiThread {
-                adapter.submit(archived)
-                binding.empty.visibility = if (archived.isEmpty()) View.VISIBLE else View.GONE
+        runIo {
+            try {
+                val archived = repo.getConversations()
+                    .filter { secure.isArchived(it.address) }
+                    .sortedByDescending { it.date }
+                runOnUiThread {
+                    if (isFinishing) return@runOnUiThread
+                    adapter.submit(archived)
+                    binding.empty.visibility = if (archived.isEmpty()) View.VISIBLE else View.GONE
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ArchiveActivity", "archive load failed", e)
             }
-        }.start()
+        }
+    }
+
+    /** Queues [task] on the worker thread; a task after teardown is dropped. */
+    private fun runIo(task: () -> Unit) {
+        try {
+            ioExecutor.execute(task)
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        ioExecutor.shutdown()
     }
 
     private fun showRowMenu(conv: Conversation) {

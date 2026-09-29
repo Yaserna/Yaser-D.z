@@ -3,13 +3,24 @@ package com.privatemsg.app.sms
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.provider.Telephony
 
 /**
  * Required so the app is eligible to be the default SMS app.
- * Full MMS handling will be added later.
+ *
+ * While it is the default app nothing else downloads incoming MMS, so a silent stub
+ * would make picture messages vanish without a trace. This cannot yet open them
+ * (parsing the media PDU is a separate milestone), but it does tell the user one
+ * arrived. The notification deliberately carries no sender and no content: it looks
+ * the same whatever number the MMS came from, so it cannot expose the hidden section.
  */
 class MmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        // MMS handling to be implemented in a later milestone.
+        if (intent.action != Telephony.Sms.Intents.WAP_PUSH_DELIVER_ACTION) return
+        try {
+            Notifier.showMmsArrived(context)
+        } catch (e: Exception) {
+            android.util.Log.e("MmsReceiver", "mms notice failed", e)
+        }
     }
 }

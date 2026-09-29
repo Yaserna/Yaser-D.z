@@ -8,9 +8,16 @@ import android.database.sqlite.SQLiteOpenHelper
 /**
  * Private local database for hidden messages.
  * Thread-safe singleton with WAL mode enabled to prevent database locking.
+ *
+ * The address and body columns are stored encrypted (see [DbCipher]), so opening the
+ * file gives unreadable text. Because encrypted values cannot be compared, every row
+ * also carries [COL_ADDR_HASH] - a keyed hash of the normalized address - and all
+ * lookups go through that column instead of scanning the whole table.
  */
 class HiddenDbHelper(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
+
+    private val appContext = context.applicationContext
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -29,9 +36,10 @@ class HiddenDbHelper(context: Context) :
                 "type INTEGER, " +
                 "sub_id INTEGER DEFAULT -1, " +
                 "status INTEGER DEFAULT -1, " +
-                "read INTEGER DEFAULT 1)"
+                "read INTEGER DEFAULT 1, " +
+                "$COL_ADDR_HASH TEXT)"
         )
-        db.execSQL("CREATE INDEX IF NOT EXISTS idx_hidden_address ON $TABLE(address)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_hidden_addr_hash ON $TABLE($COL_ADDR_HASH)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -47,13 +55,101 @@ class HiddenDbHelper(context: Context) :
         if (oldVersion < 5) {
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_hidden_address ON $TABLE(address)")
         }
+        if (oldVersion < 6) {
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_ADDR_HASH TEXT")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_hidden_addr_hash ON $TABLE($COL_ADDR_HASH)")
+            // The address column now holds ciphertext, so the old index can never match
+            // a lookup again - drop it instead of maintaining a dead one.
+            db.execSQL("DROP INDEX IF EXISTS idx_hidden_address")
+            encryptExistingRows(db)
+        }
+    }
+
+    /**
+     * Upgrades rows written before encryption existed: computes their lookup hash and
+     * rewrites the plaintext address/body as ciphertext.
+     *
+     * SQLiteOpenHelper already runs [onUpgrade] inside its own transaction, so no
+     * transaction is started here (a nested one throws on older Android versions).
+     * Failures are swallowed on purpose: a half-migrated table stays readable, and
+     * [ensureBackfilled] repairs whatever the migration could not finish.
+     */
+    private fun encryptExistingRows(db: SQLiteDatabase) {
+        try {
+            val ids = mutableListOf<Long>()
+            val addresses = mutableListOf<String>()
+            val bodies = mutableListOf<String>()
+            db.query(TABLE, arrayOf("id", "address", "body"), null, null, null, null, null).use { c ->
+                while (c.moveToNext()) {
+                    ids.add(c.getLong(0))
+                    addresses.add(c.getString(1) ?: "")
+                    bodies.add(c.getString(2) ?: "")
+                }
+            }
+            for (i in ids.indices) {
+                val values = ContentValues().apply {
+                    put(COL_ADDR_HASH, DbCipher.lookupHash(appContext, SecureStore.normalize(addresses[i])))
+                    put("address", DbCipher.encrypt(appContext, addresses[i]))
+                    put("body", DbCipher.encrypt(appContext, bodies[i]))
+                }
+                db.update(TABLE, values, "id = ?", arrayOf(ids[i].toString()))
+            }
+            backfillChecked = true
+        } catch (_: Exception) {
+            // Leave it for ensureBackfilled() rather than breaking the whole section.
+        }
+    }
+
+    @Volatile
+    private var backfillChecked = false
+
+    // Deliberately not `this`: every other method of this class is @Synchronized, and a
+    // caller may hold an open SQLite transaction while waiting for that monitor
+    // (migrateToHidden does exactly that). Locking a private object here keeps the
+    // lock order one-way and cannot deadlock against a concurrent write.
+    private val backfillLock = Any()
+
+    /**
+     * A row without a lookup hash is invisible to every address-based query, so any
+     * row the migration could not finish is fixed here - once per process, before the
+     * first read of the table.
+     */
+    private fun ensureBackfilled() {
+        if (backfillChecked) return
+        synchronized(backfillLock) {
+            if (backfillChecked) return
+            try {
+                val db = writableDatabase
+                val pending = mutableListOf<Triple<Long, String, String>>()
+                db.query(
+                    TABLE, arrayOf("id", "address", "body"),
+                    "$COL_ADDR_HASH IS NULL OR $COL_ADDR_HASH = ''", null, null, null, null
+                ).use { c ->
+                    while (c.moveToNext()) {
+                        pending.add(Triple(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: ""))
+                    }
+                }
+                for ((id, address, body) in pending) {
+                    val values = ContentValues().apply {
+                        put(COL_ADDR_HASH, DbCipher.lookupHash(appContext, SecureStore.normalize(address)))
+                        put("address", DbCipher.encrypt(appContext, address))
+                        put("body", DbCipher.encrypt(appContext, body))
+                    }
+                    db.update(TABLE, values, "id = ?", arrayOf(id.toString()))
+                }
+                backfillChecked = true
+            } catch (_: Exception) {
+                // Retried on the next read; nothing here may break the section.
+            }
+        }
     }
 
     @Synchronized
     fun insert(address: String, body: String, date: Long, type: Int, subId: Int = -1): Long {
         val values = ContentValues().apply {
-            put("address", address)
-            put("body", body)
+            put(COL_ADDR_HASH, DbCipher.lookupHash(appContext, SecureStore.normalize(address)))
+            put("address", DbCipher.encrypt(appContext, address))
+            put("body", DbCipher.encrypt(appContext, body))
             put("date", date)
             put("type", type)
             put("sub_id", subId)
@@ -65,35 +161,13 @@ class HiddenDbHelper(context: Context) :
 
     @Synchronized
     fun markRead(address: String) {
-        val target = SecureStore.normalize(address)
-        val db = writableDatabase
-        db.beginTransaction()
-        try {
-            db.query(TABLE, arrayOf("id", "address"), "read = 0", null, null, null, null).use { c ->
-                while (c.moveToNext()) {
-                    if (SecureStore.normalize(c.getString(1) ?: "") == target) {
-                        val v = ContentValues().apply { put("read", 1) }
-                        db.update(TABLE, v, "id = ?", arrayOf(c.getLong(0).toString()))
-                    }
-                }
-            }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-    }
-
-    @Synchronized
-    fun hasUnread(address: String): Boolean {
-        val target = SecureStore.normalize(address)
-        readableDatabase.query(
-            TABLE, arrayOf("address"), "read = 0 AND type = $INBOX", null, null, null, null
-        ).use { c ->
-            while (c.moveToNext()) {
-                if (SecureStore.normalize(c.getString(0) ?: "") == target) return true
-            }
-        }
-        return false
+        ensureBackfilled()
+        val values = ContentValues().apply { put("read", 1) }
+        writableDatabase.update(
+            TABLE, values,
+            "read = 0 AND $COL_ADDR_HASH = ?",
+            arrayOf(hashOf(address))
+        )
     }
 
     @Synchronized
@@ -110,46 +184,47 @@ class HiddenDbHelper(context: Context) :
 
     @Synchronized
     fun getConversations(): List<Conversation> {
-        val list = mutableListOf<Conversation>()
-        val seen = HashSet<String>()
+        ensureBackfilled()
+        val latestByKey = LinkedHashMap<String, Conversation>()
+        val unreadKeys = HashSet<String>()
         readableDatabase.query(
-            TABLE, arrayOf("address", "body", "date"),
+            TABLE, arrayOf(COL_ADDR_HASH, "address", "body", "date", "type", "read"),
             null, null, null, null, "date DESC"
         ).use { c ->
             while (c.moveToNext()) {
-                val address = c.getString(0) ?: ""
-                val key = SecureStore.normalize(address)
-                if (!seen.add(key)) continue
-                list.add(
-                    Conversation(
-                        threadId = key.hashCode().toLong(),
-                        address = address,
-                        snippet = c.getString(1) ?: "",
-                        date = c.getLong(2)
-                    )
+                val address = decrypted(c.getString(1))
+                // Rows written before the hash column exist still group correctly.
+                val key = c.getString(0)?.takeIf { it.isNotEmpty() }
+                    ?: DbCipher.lookupHash(appContext, SecureStore.normalize(address))
+                if (c.getInt(4) == INBOX && c.getInt(5) == 0) unreadKeys.add(key)
+                if (latestByKey.containsKey(key)) continue
+                // The query is newest-first, so this is the latest message of the address.
+                latestByKey[key] = Conversation(
+                    threadId = SecureStore.normalize(address).hashCode().toLong(),
+                    address = address,
+                    snippet = decrypted(c.getString(2)),
+                    date = c.getLong(3)
                 )
             }
         }
-        return list
+        return latestByKey.map { (key, conv) -> conv.copy(unread = unreadKeys.contains(key)) }
     }
 
     @Synchronized
     fun getMessages(address: String): List<Message> {
+        ensureBackfilled()
         val list = mutableListOf<Message>()
-        val target = SecureStore.normalize(address)
         readableDatabase.query(
             TABLE, arrayOf("id", "address", "body", "date", "type", "sub_id", "status"),
-            null, null, null, null, "date ASC"
+            "$COL_ADDR_HASH = ?", arrayOf(hashOf(address)), null, null, "date ASC"
         ).use { c ->
             while (c.moveToNext()) {
-                val addr = c.getString(1) ?: ""
-                if (SecureStore.normalize(addr) != target) continue
                 list.add(
                     Message(
                         id = c.getLong(0),
                         threadId = 0,
-                        address = addr,
-                        body = c.getString(2) ?: "",
+                        address = decrypted(c.getString(1)),
+                        body = decrypted(c.getString(2)),
                         date = c.getLong(3),
                         type = c.getInt(4),
                         subId = c.getInt(5),
@@ -168,28 +243,21 @@ class HiddenDbHelper(context: Context) :
 
     @Synchronized
     fun deleteByAddress(address: String) {
-        val target = SecureStore.normalize(address)
-        val db = writableDatabase
-        db.beginTransaction()
-        try {
-            db.query(TABLE, arrayOf("id", "address"), null, null, null, null, null).use { c ->
-                while (c.moveToNext()) {
-                    val addr = c.getString(1) ?: ""
-                    if (SecureStore.normalize(addr) == target) {
-                        db.delete(TABLE, "id = ?", arrayOf(c.getLong(0).toString()))
-                    }
-                }
-            }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
+        ensureBackfilled()
+        writableDatabase.delete(TABLE, "$COL_ADDR_HASH = ?", arrayOf(hashOf(address)))
     }
+
+    private fun hashOf(address: String): String =
+        DbCipher.lookupHash(appContext, SecureStore.normalize(address))
+
+    private fun decrypted(stored: String?): String =
+        stored?.let { DbCipher.decrypt(appContext, it) } ?: ""
 
     companion object {
         private const val DB_NAME = "hidden.db"
-        private const val DB_VERSION = 5
+        private const val DB_VERSION = 6
         private const val TABLE = "hidden_sms"
+        private const val COL_ADDR_HASH = "addr_hash"
         private const val INBOX = 1
 
         @Volatile

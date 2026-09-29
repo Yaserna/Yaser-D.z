@@ -12,7 +12,9 @@ class SmsRepository(private val context: Context) {
     fun getConversations(): List<Conversation> {
         val latest = LinkedHashMap<Long, Conversation>()
         val unreadThreads = HashSet<Long>()
-        val hidden = secure.getHiddenNumbers()
+        // Compare normalized forms: the stored entries are whatever the user typed
+        // ("+98 912 ..." etc.), which never equals the normalized address as-is.
+        val hidden = secure.getHiddenNumbers().map { SecureStore.normalize(it) }.toSet()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.THREAD_ID,
@@ -335,11 +337,8 @@ class SmsRepository(private val context: Context) {
                 idsToDelete.add(c.getLong(iId))
             }
         }
-        for (id in idsToDelete) {
-            context.contentResolver.delete(
-                Telephony.Sms.CONTENT_URI, "${Telephony.Sms._ID} = ?", arrayOf(id.toString())
-            )
-        }
+        // One bulk delete instead of one provider call per row.
+        deleteMessages(idsToDelete)
     }
 
     /** Move a hidden conversation back into the visible system store. */
@@ -365,10 +364,12 @@ class SmsRepository(private val context: Context) {
                 put(Telephony.Sms.READ, 1)
                 put(Telephony.Sms.TYPE, m.type)
             }
-            if (m.type == Telephony.Sms.MESSAGE_TYPE_SENT) {
-                sentValues.add(values)
-            } else {
+            // Only real incoming messages belong in the inbox; anything the user sent
+            // (sent / queued / failed) goes back through the sent table.
+            if (m.type == Telephony.Sms.MESSAGE_TYPE_INBOX) {
                 inboxValues.add(values)
+            } else {
+                sentValues.add(values)
             }
         }
         if (sentValues.isNotEmpty()) {

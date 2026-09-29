@@ -32,23 +32,49 @@ import com.privatemsg.app.databinding.ActivityHiddenBinding
 class HiddenActivity : BaseActivity() {
     private val bgExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
+    /** Queues [task]; false once the screen is torn down and the worker is stopped. */
+    private fun runBg(task: () -> Unit): Boolean {
+        return try {
+            bgExecutor.execute(task)
+            true
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            false
+        }
+    }
+
+    private var busyDialog: android.app.Dialog? = null
+
     private fun runAsyncOperation(message: String, task: () -> Unit) {
         val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
             .setMessage(message)
             .setCancelable(false)
             .create()
         dialog.show()
+        // Keep a handle: a dialog whose window is gone when the worker finishes leaks
+        // the activity (WindowLeaked) and keeps the hidden screen alive.
+        busyDialog = dialog
 
-        bgExecutor.execute {
+        val dismiss = Runnable {
+            if (busyDialog === dialog) busyDialog = null
+            try { dialog.dismiss() } catch (_: Exception) {}
+        }
+        val started = runBg {
             try {
                 task()
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing) {
+                        Toast.makeText(this, "کاری انجام نشد: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
             } finally {
                 runOnUiThread {
-                    try { dialog.dismiss() } catch (_: Exception) {}
+                    dismiss.run()
                     refresh()
                 }
             }
         }
+        if (!started) dismiss.run()
     }
 
     override val leavesToMainOnBackground = true
@@ -66,8 +92,10 @@ class HiddenActivity : BaseActivity() {
             val address = result.data?.getStringExtra("address")
             if (!address.isNullOrBlank()) {
                 secure.addHiddenNumber(address)
-                repo.migrateToHidden(address, hiddenDb)
-                refresh()
+                // Moving messages touches the provider and the private DB: never on the UI thread.
+                runAsyncOperation("در حال انتقال پیام‌ها به بخش مخفی...") {
+                    repo.migrateToHidden(address, hiddenDb)
+                }
             }
         }
     }
@@ -113,35 +141,66 @@ class HiddenActivity : BaseActivity() {
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        try { unregisterReceiver(refreshReceiver) } catch (_: Exception) {}
-    }
-
     override fun onResume() {
         super.onResume()
         // Belt-and-suspenders: sweep any hidden-number messages out of the system
         // store so no trace remains for another SMS app.
-        Thread {
-            repo.purgeHiddenFromProvider(hiddenDb)
-            runOnUiThread { refresh() }
-        }.start()
+        runQuietly {
+            try {
+                repo.purgeHiddenFromProvider(hiddenDb)
+            } catch (_: Exception) {
+                // A failed sweep must not kill the app; it retries on the next visit.
+            }
+        }
         refresh()
+    }
+
+    /** Runs [task] off the UI thread and refreshes the list when it is done. */
+    private fun runQuietly(task: () -> Unit) {
+        runBg {
+            task()
+            runOnUiThread { if (!isDestroyed) refresh() }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        bgExecutor.shutdown()
+        try { busyDialog?.dismiss() } catch (_: Exception) {}
+        busyDialog = null
+        try { unregisterReceiver(refreshReceiver) } catch (_: Exception) {}
     }
 
     private fun refresh() {
         // Show every registered hidden number, with its latest hidden message (if any).
-        val list = secure.getHiddenNumbers().map { address ->
-            val last = hiddenDb.getMessages(address).lastOrNull()
-            Conversation(
-                threadId = 0,
-                address = address,
-                snippet = last?.body ?: getString(R.string.no_messages_yet),
-                date = last?.date ?: 0L,
-                unread = hiddenDb.hasUnread(address)
-            )
-        }.sortedByDescending { it.date }
-        adapter.submit(list)
+        // One single pass over the private DB feeds all rows (no per-number scan).
+        // Reading and decrypting that pass is disk + crypto work, so it runs on the
+        // worker thread and only the finished list is handed to the adapter.
+        val emptyText = getString(R.string.no_messages_yet)
+        runBg {
+            val latest = try {
+                hiddenDb.getConversations().associateBy { SecureStore.normalize(it.address) }
+            } catch (e: Exception) {
+                android.util.Log.e("HiddenActivity", "hidden list read failed", e)
+                emptyMap()
+            }
+            val numbers = secure.getHiddenNumbers()
+            val list = numbers.map { address ->
+                val last = latest[SecureStore.normalize(address)]
+                Conversation(
+                    threadId = 0,
+                    address = address,
+                    snippet = last?.snippet ?: emptyText,
+                    date = last?.date ?: 0L,
+                    unread = last?.unread == true
+                )
+            }.sortedByDescending { it.date }
+            runOnUiThread {
+                // A queued refresh can land after the screen is gone; binding/adapter
+                // are still safe but there is nothing left to show.
+                if (!isFinishing && !isDestroyed) adapter.submit(list)
+            }
+        }
     }
 
     private fun showAddDialog() {

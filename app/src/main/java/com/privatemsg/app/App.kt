@@ -13,6 +13,13 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Older builds copied hidden-chat favorites into a plain-text database. That
+        // file is no longer written; removing it deletes the leftover readable copies.
+        Thread {
+            try {
+                deleteDatabase("favorites.db")
+            } catch (_: Exception) {}
+        }.start()
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) { started++ }
             override fun onActivityStopped(activity: Activity) { started-- }

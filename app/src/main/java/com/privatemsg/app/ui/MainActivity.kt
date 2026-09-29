@@ -34,10 +34,21 @@ class MainActivity : BaseActivity() {
     private lateinit var contacts: ContactsHelper
     private lateinit var adapter: ConversationAdapter
     private var askedDefault = false
-    private var allConvos: List<Conversation> = emptyList()
+    // Read from the worker thread during bulk actions, replaced on the UI thread.
+    @Volatile private var allConvos: List<Conversation> = emptyList()
     private var archivedConvos: List<Conversation> = emptyList()
     private var searchIndex: List<Pair<Conversation, String>> = emptyList()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** Queues [task] on the worker thread; false once the screen has been torn down. */
+    private fun runIo(task: () -> Unit): Boolean {
+        return try {
+            ioExecutor.execute(task)
+            true
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            false
+        }
+    }
     private val fabHandler = Handler(Looper.getMainLooper())
     private var longFired = false
     private val hiddenRunnable = Runnable {
@@ -156,13 +167,8 @@ class MainActivity : BaseActivity() {
         binding.actionArchive.setOnClickListener { applyToSelection(Action.ARCHIVE) }
         binding.actionMute.setOnClickListener { applyToSelection(Action.MUTE) }
 
-        // The archive badge (shown only for unread archived chats) opens the archive.
+        // The archive button in the top bar opens the archive screen.
         binding.archiveButton.setOnClickListener {
-            startActivity(Intent(this, ArchiveActivity::class.java))
-        }
-        // The "Archive" search entry opens the archive screen.
-        binding.archiveEntry.setOnClickListener {
-            clearSearch()
             startActivity(Intent(this, ArchiveActivity::class.java))
         }
 
@@ -177,12 +183,49 @@ class MainActivity : BaseActivity() {
         )
 
         requestPermissionsIfNeeded()
+
+        // Back: leave selection mode, then clear an active search, then close the app.
+        // (The same order the old onBackPressed override had, on the modern API.)
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : androidx.activity.OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    when {
+                        adapter.selectionMode -> adapter.exitSelection()
+                        // A search is active → back clears it and returns to the full list,
+                        // instead of leaving the screen stuck in the filtered state.
+                        !binding.searchInput.text.isNullOrEmpty() -> clearSearch()
+                        binding.searchInput.hasFocus() -> binding.searchInput.clearFocus()
+                        else -> finish()
+                    }
+                }
+            }
+        )
     }
 
     override fun onDestroy() {
         super.onDestroy()
         contentResolver.unregisterContentObserver(smsObserver)
         ioExecutor.shutdown()
+        cancelLongPresses()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // A half-done hold must not fire after the screen is gone (it would launch an
+        // activity from a paused/destroyed context).
+        cancelLongPresses()
+        // If the pull gesture is stolen by the window (a call, a notification shade) the
+        // up/cancel event never arrives, and the list would stay shifted down over the
+        // private-folder hint. Snap it back whenever the screen leaves the foreground.
+        binding.recycler.animate().cancel()
+        binding.recycler.translationY = 0f
+        pulling = false
+    }
+
+    private fun cancelLongPresses() {
+        fabHandler.removeCallbacks(hiddenRunnable)
+        settingsHandler.removeCallbacks(settingsRunnable)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -220,70 +263,89 @@ class MainActivity : BaseActivity() {
 
     private enum class Action { DELETE, READ, PIN, ARCHIVE, MUTE }
 
+    /**
+     * A bulk flag switch must end in ONE state for the whole selection: clear the flag
+     * only when every selected chat already has it, otherwise set it on all of them.
+     * (Toggling item by item left a mixed result nobody expected.)
+     */
+    private fun bulkTarget(addresses: List<String>, isOn: (String) -> Boolean): Boolean =
+        !addresses.all { isOn(it) }
+
     private fun applyToSelection(action: Action) {
         val ids = adapter.selectedThreadIds()
+        val addresses = ids.mapNotNull { id ->
+            allConvos.firstOrNull { it.threadId == id }?.address?.takeIf { it.isNotBlank() }
+        }
+        val wantPin = bulkTarget(addresses) { secure.isPinned(it) }
+        val wantMute = bulkTarget(addresses) { secure.isMuted(it) }
+        val wantArchive = bulkTarget(addresses) { secure.isArchived(it) }
         val starredDb = StarredDbHelper.getInstance(this)
-        var protectedCount = 0
-        for (id in ids) {
-            val addr = allConvos.firstOrNull { it.threadId == id }?.address.orEmpty()
-            when (action) {
-                Action.DELETE -> {
-                    val isProtected = (addr.isNotBlank() && starredDb.isThreadStarred(addr)) ||
-                            starredDb.getStarredSystemMessageIds(id).isNotEmpty()
-                    if (isProtected) {
-                        protectedCount++
-                    } else {
-                        repo.deleteThread(id)
+        // Provider deletes/updates are far too slow for the UI thread.
+        runIo {
+            var protectedCount = 0
+            try {
+                for (id in ids) {
+                    val addr = allConvos.firstOrNull { it.threadId == id }?.address.orEmpty()
+                    when (action) {
+                        Action.DELETE -> {
+                            val isProtected = (addr.isNotBlank() && starredDb.isThreadStarred(addr)) ||
+                                    starredDb.getStarredSystemMessageIds(id).isNotEmpty()
+                            if (isProtected) {
+                                protectedCount++
+                            } else {
+                                repo.deleteThread(id)
+                            }
+                        }
+                        Action.READ -> repo.markThreadRead(id)
+                        Action.PIN -> {
+                            if (addr.isNotBlank()) secure.setPinned(addr, wantPin)
+                            else secure.togglePin(id)
+                        }
+                        Action.MUTE -> {
+                            if (addr.isNotBlank()) secure.setMuted(addr, wantMute)
+                        }
+                        Action.ARCHIVE -> {
+                            if (addr.isNotBlank()) secure.setArchived(addr, wantArchive)
+                            else secure.setArchived(id, !secure.isArchived(id))
+                        }
                     }
                 }
-                Action.READ -> repo.markThreadRead(id)
-                Action.PIN -> {
-                    if (addr.isNotBlank()) secure.togglePin(addr)
-                    else secure.togglePin(id)
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "bulk action failed", e)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (protectedCount > 0) {
+                    android.widget.Toast.makeText(
+                        this, "$protectedCount گفتگوی ستاره‌دار و محافظت‌شده حذف نشدند.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
                 }
-                Action.MUTE -> {
-                    if (addr.isNotBlank()) secure.toggleMute(addr)
-                }
-                Action.ARCHIVE -> {
-                    if (addr.isNotBlank()) secure.setArchived(addr, !secure.isArchived(addr))
-                    else secure.setArchived(id, !secure.isArchived(id))
-                }
+                adapter.exitSelection()
+                refresh()
             }
         }
-        if (protectedCount > 0) {
-            android.widget.Toast.makeText(this, "$protectedCount گفتگوی ستاره‌دار و محافظت‌شده حذف نشدند.", android.widget.Toast.LENGTH_LONG).show()
-        }
-        adapter.exitSelection()
-        refresh()
     }
 
     private fun updateSelectionUi() {
         val on = adapter.selectionMode
         binding.settingsButton.visibility = if (on) View.GONE else View.VISIBLE
-        binding.archiveButtonWrap.visibility = if (on) View.GONE else View.VISIBLE
         updateArchiveBadge()
         binding.selectAllButton.visibility = if (on) View.VISIBLE else View.GONE
         binding.cancelButton.visibility = if (on) View.VISIBLE else View.GONE
         binding.searchBar.visibility = if (on) View.GONE else View.VISIBLE
-        if (on) binding.privateEntry.visibility = View.GONE
-        if (on) binding.archiveEntry.visibility = View.GONE
         binding.favoritesButton.visibility = if (on) View.GONE else View.VISIBLE
         binding.selectionBar.visibility = if (on) View.VISIBLE else View.GONE
         binding.fab.visibility = if (on) View.GONE else View.VISIBLE
+        if (on) {
+            binding.privateEntry.visibility = View.GONE
+        } else {
+            // Re-apply the search: it is what decides whether the "Private" row shows.
+            applyFilter(binding.searchInput.text?.toString().orEmpty())
+        }
         binding.title.text =
             if (on) getString(R.string.n_selected, adapter.selectedCount())
             else getString(R.string.app_name)
-    }
-
-    override fun onBackPressed() {
-        when {
-            adapter.selectionMode -> adapter.exitSelection()
-            // A search is active → back clears it and returns to the full list,
-            // instead of leaving the screen stuck in the filtered state.
-            !binding.searchInput.text.isNullOrEmpty() -> clearSearch()
-            binding.searchInput.hasFocus() -> binding.searchInput.clearFocus()
-            else -> super.onBackPressed()
-        }
     }
 
     /** Empties the search box, drops focus, and hides the keyboard. */
@@ -341,23 +403,35 @@ class MainActivity : BaseActivity() {
         })
     }
 
+    /** Bumped per keystroke so a slow answer cannot reveal the entry after the user moved on. */
+    private var revealToken = 0
+
     private fun applyFilter(query: String) {
         val raw = query.trim()
         // Reveal the hidden "Private" entry only when the typed text is exactly the
         // secret code. This is the sole entrance to the hidden section once a code is set.
         // Normalize to Latin digits so a Persian-keyboard "۱۲۳۴" still matches the code.
         val code = raw.toLatinDigits()
-        binding.privateEntry.visibility =
-            if (code.isNotEmpty() && secure.hasPin() && secure.checkPin(code)) View.VISIBLE
-            else View.GONE
-
-        // Typing the archive keyword reveals an "Archive" entry (which opens the
-        // archive screen), rather than listing the archived chats inline.
-        val showArchive = raw.isNotEmpty() && raw == secure.archiveKeyword
-        binding.archiveEntry.visibility = if (showArchive) View.VISIBLE else View.GONE
-        if (showArchive) {
-            adapter.submit(emptyList())
-            return
+        // The code is always 4..12 digits, so an ordinary (or short) search never
+        // pays for the slow key derivation.
+        val plausible = code.length in 4..12 && code.all { it.isDigit() }
+        // While the PIN screen is in its cooldown, guessing the code here is blocked too.
+        val throttled = secure.pinLockUntil() > System.currentTimeMillis()
+        val token = ++revealToken
+        binding.privateEntry.visibility = View.GONE
+        if (!throttled && plausible && secure.hasPin()) {
+            // Key derivation takes tens of milliseconds: it must not run between
+            // keystrokes on the UI thread, so the answer arrives a moment later.
+            runIo {
+                val matches = secure.checkPin(code)
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed && token == revealToken &&
+                        binding.searchInput.text?.toString()?.trim()?.toLatinDigits() == code
+                    ) {
+                        binding.privateEntry.visibility = if (matches) View.VISIBLE else View.GONE
+                    }
+                }
+            }
         }
 
         val q = raw.lowercase()
@@ -415,12 +489,18 @@ class MainActivity : BaseActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_SMS)
             != PackageManager.PERMISSION_GRANTED
         ) return
-        ioExecutor.execute {
-            val all = repo.getConversations()
+        runIo {
+            val all = try {
+                repo.getConversations()
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "conversation list load failed", e)
+                return@runIo
+            }
             // 1) The main list (archived chats excluded) shows immediately.
             val main = all.filter { !secure.isArchived(it.address) }
                 .sortedByDescending { secure.isPinned(it.address) }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 allConvos = main
                 if (binding.searchInput.text.isNullOrEmpty()) adapter.submit(main)
             }
@@ -429,6 +509,7 @@ class MainActivity : BaseActivity() {
             val archived = all.filter { secure.isArchived(it.address) }
                 .sortedByDescending { it.date }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 archivedConvos = archived
                 updateArchiveBadge()
             }
@@ -437,6 +518,7 @@ class MainActivity : BaseActivity() {
                 it to (contacts.displayFor(it.address) + " " + it.snippet).lowercase()
             }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 searchIndex = index
                 val q = binding.searchInput.text?.toString().orEmpty()
                 if (q.isNotEmpty()) applyFilter(q)
@@ -444,9 +526,11 @@ class MainActivity : BaseActivity() {
         }
     }
 
-    /** Show the archive badge (next to the gear) only when an archived chat is unread. */
+    /** The archive button is always shown; its dot appears only for unread archived chats. */
     private fun updateArchiveBadge() {
-        val show = !adapter.selectionMode && archivedConvos.any { it.unread }
-        binding.archiveButtonWrap.visibility = if (show) View.VISIBLE else View.GONE
+        val on = adapter.selectionMode
+        binding.archiveButtonWrap.visibility = if (on) View.GONE else View.VISIBLE
+        val unread = !on && archivedConvos.any { it.unread }
+        binding.archiveBadge.visibility = if (unread) View.VISIBLE else View.GONE
     }
 }
