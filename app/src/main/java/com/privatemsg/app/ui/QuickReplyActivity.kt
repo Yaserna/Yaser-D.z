@@ -27,6 +27,7 @@ class QuickReplyActivity : BaseActivity() {
     private var address: String = ""
     private var threadId: Long = -1
     private var notifId: Int = 0
+    private var subId: Int = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +43,7 @@ class QuickReplyActivity : BaseActivity() {
         address = intent.getStringExtra("address") ?: ""
         threadId = intent.getLongExtra("thread_id", -1)
         notifId = intent.getIntExtra("notif_id", 0)
+        subId = intent.getIntExtra("sub_id", -1)
 
         binding.title.text = ContactsHelper(this).displayFor(address)
         showLastMessages()
@@ -95,9 +97,9 @@ class QuickReplyActivity : BaseActivity() {
         val body = binding.input.text.toString().trim()
         if (body.isEmpty() || address.isEmpty()) return
         try {
-            val subId = SimHelper(this).defaultSubId()
-            SmsRepository(this).storeSentMessage(address, body, subId)
-            val sm = smsManager(subId)
+            val sub = if (subId >= 0) subId else SimHelper(this).defaultSubId()
+            SmsRepository(this).storeSentMessage(address, body, sub)
+            val sm = smsManager(sub)
             val parts = sm.divideMessage(body)
             if (parts.size > 1) sm.sendMultipartTextMessage(address, null, parts, null, null)
             else sm.sendTextMessage(address, null, body, null, null)
