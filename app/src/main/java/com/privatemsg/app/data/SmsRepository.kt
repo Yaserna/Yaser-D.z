@@ -252,41 +252,45 @@ class SmsRepository(private val context: Context) {
         fun migrateToHidden(address: String, hiddenDb: HiddenDbHelper) {
         val target = SecureStore.normalize(address)
         val idsToDelete = mutableListOf<Long>()
+        val moved = mutableListOf<Message>()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
             Telephony.Sms.BODY,
             Telephony.Sms.DATE,
-            Telephony.Sms.TYPE
+            Telephony.Sms.TYPE,
+            Telephony.Sms.SUBSCRIPTION_ID
         )
-        val db = hiddenDb.writableDatabase
-        db.beginTransaction()
-        try {
-            context.contentResolver.query(
-                Telephony.Sms.CONTENT_URI, projection, null, null,
-                "${Telephony.Sms.DATE} ASC"
-            )?.use { c ->
-                val iId = c.getColumnIndexOrThrow(Telephony.Sms._ID)
-                val iAddr = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
-                val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
-                val iDate = c.getColumnIndexOrThrow(Telephony.Sms.DATE)
-                val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
-                while (c.moveToNext()) {
-                    val addr = c.getString(iAddr) ?: ""
-                    if (SecureStore.normalize(addr) != target) continue
-                    hiddenDb.insert(
-                        addr,
-                        c.getString(iBody) ?: "",
-                        c.getLong(iDate),
-                        c.getInt(iType)
+        context.contentResolver.query(
+            Telephony.Sms.CONTENT_URI, projection, null, null,
+            "${Telephony.Sms.DATE} ASC"
+        )?.use { c ->
+            val iId = c.getColumnIndexOrThrow(Telephony.Sms._ID)
+            val iAddr = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
+            val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
+            val iDate = c.getColumnIndexOrThrow(Telephony.Sms.DATE)
+            val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
+            val iSub = c.getColumnIndex(Telephony.Sms.SUBSCRIPTION_ID)
+            while (c.moveToNext()) {
+                val addr = c.getString(iAddr) ?: ""
+                if (SecureStore.normalize(addr) != target) continue
+                moved.add(
+                    Message(
+                        id = 0,
+                        threadId = 0,
+                        address = addr,
+                        body = c.getString(iBody) ?: "",
+                        date = c.getLong(iDate),
+                        type = c.getInt(iType),
+                        subId = if (iSub >= 0) c.getInt(iSub) else -1
                     )
-                    idsToDelete.add(c.getLong(iId))
-                }
+                )
+                idsToDelete.add(c.getLong(iId))
             }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
         }
+        // Batched inside the helper's own lock: no concurrent writer can join this
+        // transaction, and the provider query above already finished before it opened.
+        hiddenDb.insertAll(moved)
 
         idsToDelete.chunked(100).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }

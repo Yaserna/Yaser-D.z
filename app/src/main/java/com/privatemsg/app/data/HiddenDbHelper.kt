@@ -103,10 +103,10 @@ class HiddenDbHelper(context: Context) :
     @Volatile
     private var backfillChecked = false
 
-    // Deliberately not `this`: every other method of this class is @Synchronized, and a
-    // caller may hold an open SQLite transaction while waiting for that monitor
-    // (migrateToHidden does exactly that). Locking a private object here keeps the
-    // lock order one-way and cannot deadlock against a concurrent write.
+    // Deliberately not `this`: every other method of this class is @Synchronized, and
+    // some of them call ensureBackfilled() while holding that monitor (and an open
+    // SQLite transaction, in insertAll's case). Locking a private object here keeps
+    // the lock order one-way and cannot deadlock against a concurrent write.
     private val backfillLock = Any()
 
     /**
@@ -157,6 +157,24 @@ class HiddenDbHelper(context: Context) :
             put("read", if (type == INBOX) 0 else 1)
         }
         return writableDatabase.insert(TABLE, null, values)
+    }
+
+    /**
+     * Inserts many rows as one transaction while holding this helper's monitor, so no
+     * concurrent writer (e.g. the incoming-SMS worker's [insert]) can slip its own
+     * writes into the transaction and be silently rolled back if it fails.
+     */
+    @Synchronized
+    fun insertAll(rows: List<Message>) {
+        if (rows.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (r in rows) insert(r.address, r.body, r.date, r.type, r.subId)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     @Synchronized
