@@ -42,6 +42,10 @@ class HiddenConversationActivity : BaseActivity() {
     private var sims: List<SimHelper.Sim> = emptyList()
     private var simIndex: Int = 0
     private var resumedNow = false
+    // The normalized address this screen wrote into the shared static; onPause clears
+    // it only while it still matches, so a reversed resume/pause order can't unmark
+    // the chat that is actually on screen.
+    private var ownActiveNormalizedAddress: String? = null
     private var encryptToggle: android.widget.TextView? = null
     private var honeypotToggle: android.widget.TextView? = null
 
@@ -230,7 +234,9 @@ class HiddenConversationActivity : BaseActivity() {
     override fun onResume() {
         super.onResume()
         resumedNow = true
-        activeNormalizedAddress = if (address.isNotEmpty()) SecureStore.normalize(address) else null
+        ownActiveNormalizedAddress =
+            if (address.isNotEmpty()) SecureStore.normalize(address) else null
+        activeNormalizedAddress = ownActiveNormalizedAddress
         // Opening the conversation clears its unread state and removes its decoy notification.
         hiddenDb.markRead(address)
         Notifier.cancelDecoy(this, address)
@@ -241,7 +247,13 @@ class HiddenConversationActivity : BaseActivity() {
     override fun onPause() {
         super.onPause()
         resumedNow = false
-        activeNormalizedAddress = null
+        // Only erase the open-chat mark if it still names THIS screen; a new screen's
+        // resume can arrive before this pause runs, and clearing blindly would let
+        // notifications fire for the chat actually on screen.
+        if (activeNormalizedAddress == ownActiveNormalizedAddress) {
+            activeNormalizedAddress = null
+            ownActiveNormalizedAddress = null
+        }
         // Keep whatever is typed as a draft so it isn't lost on back/exit.
         if (address.isNotEmpty()) SecureStore(this).setDraft(address, binding.input.text.toString())
     }

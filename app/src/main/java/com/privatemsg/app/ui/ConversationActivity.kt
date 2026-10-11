@@ -42,6 +42,11 @@ class ConversationActivity : BaseActivity() {
     private var sims: List<SimHelper.Sim> = emptyList()
     private var simIndex: Int = 0
     private var pickedNumber: String? = null
+    // Values this instance wrote into the companion statics; onPause only erases
+    // them if they still match, so a reversed onPause/onResume (multi-window,
+    // direct activity-to-activity transitions) can't unmark the newly opened chat.
+    private var ownActiveThreadId: Long = -1L
+    private var ownActiveNormalizedAddress: String? = null
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     /** The blocking "working..." dialog, if one is showing (dismissed with the screen). */
@@ -103,7 +108,8 @@ class ConversationActivity : BaseActivity() {
         binding.recycler.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         binding.recycler.adapter = adapter
         setupSim()
-        activeNormalizedAddress = SecureStore.normalize(to)
+        ownActiveNormalizedAddress = SecureStore.normalize(to)
+        activeNormalizedAddress = ownActiveNormalizedAddress
         com.privatemsg.app.sms.Notifier.cancelIncoming(this, to)
         SecureStore(this).recordConversationOpened(to)
         // If nothing is typed yet, bring back this conversation's saved draft.
@@ -317,9 +323,7 @@ class ConversationActivity : BaseActivity() {
         super.onResume()
         // Mark this conversation as the one currently open, so a new message from it
         // shows live here (with a tiny vibration) instead of posting a notification.
-        activeThreadId = threadId
-        activeNormalizedAddress =
-            if (address.isNotEmpty()) SecureStore.normalize(address) else null
+        claimActive(threadId, if (address.isNotEmpty()) SecureStore.normalize(address) else null)
         // Opening the conversation clears its notification (so it doesn't linger).
         if (address.isNotEmpty()) {
             com.privatemsg.app.sms.Notifier.cancelIncoming(this, address)
@@ -334,10 +338,26 @@ class ConversationActivity : BaseActivity() {
 
     override fun onPause() {
         super.onPause()
-        activeThreadId = -1L
-        activeNormalizedAddress = null
+        // Erase the open-chat marks only if the statics still hold THIS screen's values.
+        // Android can deliver a new screen's onResume before this onPause runs
+        // (multi-window, direct activity-to-activity transitions); an unconditional
+        // clear here would unmark the chat that is actually on screen and let its
+        // notifications fire.
+        if (activeThreadId == ownActiveThreadId) activeThreadId = -1L
+        if (activeNormalizedAddress == ownActiveNormalizedAddress) {
+            activeNormalizedAddress = null
+            ownActiveNormalizedAddress = null
+        }
         // Keep whatever is typed as a draft so it isn't lost on back/exit.
         if (address.isNotEmpty()) SecureStore(this).setDraft(address, binding.input.text.toString())
+    }
+
+    /** Write (and claim ownership of) the process-wide "this chat is open" statics. */
+    private fun claimActive(thread: Long, normalized: String?) {
+        ownActiveThreadId = thread
+        ownActiveNormalizedAddress = normalized
+        activeThreadId = thread
+        activeNormalizedAddress = normalized
     }
 
     override fun onDestroy() {
@@ -687,7 +707,8 @@ class ConversationActivity : BaseActivity() {
         if (binding.recycler.adapter !== adapter) {
             binding.recycler.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
             binding.recycler.adapter = adapter
-            activeNormalizedAddress = SecureStore.normalize(to)
+            ownActiveNormalizedAddress = SecureStore.normalize(to)
+            activeNormalizedAddress = ownActiveNormalizedAddress
         }
         loadMessages()
     }
