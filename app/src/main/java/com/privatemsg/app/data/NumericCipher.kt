@@ -10,6 +10,12 @@ object NumericCipher {
 
     private const val MAGIC_PREFIX = "8800"
 
+    // The shortest ciphertext this format can produce is 33 bytes (version + IV + one full
+    // AES block), whose decimal form is always 78 digits, so real encrypted digits can never
+    // fall below 70 here. A shorter run can only be a number the user actually typed
+    // (card / account / tracking digits), which must not be claimed as encrypted.
+    private const val MIN_ENCRYPTED_DIGITS = 70
+
     private val MASTER_KEY = byteArrayOf(
         0x4E.toByte(), 0x79.toByte(), 0x3A.toByte(), 0x1F.toByte(),
         0x92.toByte(), 0xA5.toByte(), 0x4C.toByte(), 0x88.toByte(),
@@ -24,7 +30,9 @@ object NumericCipher {
 
     fun isNumericEncrypted(raw: String): Boolean {
         val trimmed = raw.trim()
-        if (!trimmed.startsWith(MAGIC_PREFIX) || trimmed.length < MAGIC_PREFIX.length + 12) {
+        if (!trimmed.startsWith(MAGIC_PREFIX) ||
+            trimmed.length < MAGIC_PREFIX.length + MIN_ENCRYPTED_DIGITS
+        ) {
             return false
         }
         return trimmed.all { it.isDigit() }
