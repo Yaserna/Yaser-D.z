@@ -350,8 +350,14 @@ class SmsRepository(private val context: Context) {
     /** Move a hidden conversation back into the visible system store. */
                 fun restoreFromHidden(address: String, hiddenDb: HiddenDbHelper) {
         val messages = hiddenDb.getMessages(address)
+        val threadId = try {
+            Telephony.Threads.getOrCreateThreadId(context, address)
+        } catch (_: Exception) {
+            0L
+        }
         val sentValues = mutableListOf<ContentValues>()
         val inboxValues = mutableListOf<ContentValues>()
+        val outboxValues = mutableListOf<ContentValues>()
         for (m in messages) {
             // بازیابی قطعی متن اصلی: در صورت وجود پیام‌های رمزشده تستی، آن‌ها را به متن باز می‌گرداند
             val cleanBody = if (NumericCipher.isNumericEncrypted(m.body)) {
@@ -372,13 +378,16 @@ class SmsRepository(private val context: Context) {
                 // Restored sends must not inherit the provider's default status 0,
                 // which this app shows as "delivered".
                 put(Telephony.Sms.STATUS, -1)
+                if (threadId > 0) put(Telephony.Sms.THREAD_ID, threadId)
+                if (m.subId >= 0) put(Telephony.Sms.SUBSCRIPTION_ID, m.subId)
             }
-            // Only real incoming messages belong in the inbox; anything the user sent
-            // (sent / queued / failed) goes back through the sent table.
-            if (m.type == Telephony.Sms.MESSAGE_TYPE_INBOX) {
-                inboxValues.add(values)
-            } else {
-                sentValues.add(values)
+            // Route by real history: inbox, confirmed sends, and - for queued/failed
+            // rows - the outbox, which keeps their type instead of rewriting them
+            // into "sent" the way the sent table does.
+            when (m.type) {
+                Telephony.Sms.MESSAGE_TYPE_INBOX -> inboxValues.add(values)
+                Telephony.Sms.MESSAGE_TYPE_SENT -> sentValues.add(values)
+                else -> outboxValues.add(values)
             }
         }
         if (sentValues.isNotEmpty()) {
@@ -386,6 +395,9 @@ class SmsRepository(private val context: Context) {
         }
         if (inboxValues.isNotEmpty()) {
             context.contentResolver.bulkInsert(Telephony.Sms.Inbox.CONTENT_URI, inboxValues.toTypedArray())
+        }
+        if (outboxValues.isNotEmpty()) {
+            context.contentResolver.bulkInsert(Telephony.Sms.Outbox.CONTENT_URI, outboxValues.toTypedArray())
         }
         hiddenDb.deleteByAddress(address)
     }
