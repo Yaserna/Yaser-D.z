@@ -199,14 +199,21 @@ class HiddenConversationActivity : BaseActivity() {
 
     private fun deleteSelected() {
         val selected = adapter.selectedMessages()
-        val starredDb = StarredDbHelper.getInstance(this)
-        val protectedCount = selected.count { starredDb.isStarred(it.id, isHidden = true) }
-        selected.filterNot { starredDb.isStarred(it.id, isHidden = true) }
-            .forEach { hiddenDb.deleteById(it.id) }
         adapter.exitSelection()
-        loadMessages()
-        if (protectedCount > 0) {
-            Toast.makeText(this, "$protectedCount پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+        runIo {
+            val starredDb = StarredDbHelper.getInstance(this)
+            var protectedCount = 0
+            for (m in selected) {
+                if (starredDb.isStarred(m.id, isHidden = true)) protectedCount++
+                else hiddenDb.deleteById(m.id)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                loadMessages()
+                if (protectedCount > 0) {
+                    Toast.makeText(this, "$protectedCount پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -357,8 +364,6 @@ class HiddenConversationActivity : BaseActivity() {
         val body = binding.input.text.toString().trim()
         if (body.isEmpty() || address.isEmpty()) return
 
-        sweepPublicMessages(address)
-
         val isEnc = SecureStore(this).isEncryptionEnabled(address)
         val textToSend = if (isEnc) {
             NumericCipher.encryptToNumeric(body, fromHidden = true)
@@ -368,14 +373,30 @@ class HiddenConversationActivity : BaseActivity() {
 
         val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
         if (subId >= 0) SecureStore(this).setThreadSim(address, subId)
-        val rowId = hiddenDb.insert(address, textToSend, System.currentTimeMillis(), 4, subId)
-        val deliveredPi =
-            if (SecureStore(this).deliveryReportForSub(subId)) hiddenDeliveryIntent(rowId) else null
-        sendViaSms(address, textToSend, hiddenSentIntent(rowId), deliveredPi)
 
-        binding.input.setText("")
-        SecureStore(this).setDraft(address, "")
-        loadMessages()
+        // The public-store sweep and the encrypted inserts are disk + crypto work and
+        // can take seconds on long threads, so the whole write phase runs on the
+        // worker. Only the actual hand-off to the radio happens back on the UI thread.
+        binding.sendButton.isEnabled = false
+        val queued = runIo {
+            sweepPublicMessages(address)
+            val rowId = hiddenDb.insert(address, textToSend, System.currentTimeMillis(), 4, subId)
+            val deliveredPi =
+                if (SecureStore(this).deliveryReportForSub(subId)) hiddenDeliveryIntent(rowId) else null
+            val sentPi = hiddenSentIntent(rowId)
+            runOnUiThread {
+                binding.sendButton.isEnabled = true
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                binding.input.setText("")
+                SecureStore(this).setDraft(address, "")
+                sendViaSms(address, textToSend, sentPi, deliveredPi)
+                loadMessages()
+            }
+        }
+        if (!queued) {
+            // Screen is gone and the worker is stopped; keep the draft so nothing is lost.
+            SecureStore(this).setDraft(address, body)
+        }
     }
 
     private fun setupTopBarActions() {
