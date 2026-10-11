@@ -597,9 +597,16 @@ class ConversationActivity : BaseActivity() {
             .show()
     }
 
-    private fun statusPendingIntent(action: String, uri: android.net.Uri?): android.app.PendingIntent? {
+    private fun statusPendingIntent(
+        action: String,
+        uri: android.net.Uri?,
+        partTotal: Int
+    ): android.app.PendingIntent? {
         if (uri == null) return null
-        val intent = Intent(this, SmsStatusReceiver::class.java).setAction(action).setData(uri)
+        val intent = Intent(this, SmsStatusReceiver::class.java)
+            .setAction(action)
+            .setData(uri)
+            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
         return android.app.PendingIntent.getBroadcast(
             this, (uri.toString() + action).hashCode(), intent,
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
@@ -656,10 +663,13 @@ class ConversationActivity : BaseActivity() {
         val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
         if (subId >= 0) SecureStore(this).setThreadSim(to, subId)
         val uri = repo.storeSentMessage(to, body, subId)
-        val sentPi = statusPendingIntent(SmsStatusReceiver.ACTION_SENT, uri)
+        // The status receiver must know how many radio callbacks one visible message
+        // produces, otherwise the first part's report wins over the whole message.
+        val partTotal = smsManager().divideMessage(body).size.coerceAtLeast(1)
+        val sentPi = statusPendingIntent(SmsStatusReceiver.ACTION_SENT, uri, partTotal)
         val deliveredPi =
             if (SecureStore(this).deliveryReportForSub(subId))
-                statusPendingIntent(SmsStatusReceiver.ACTION_DELIVERED, uri)
+                statusPendingIntent(SmsStatusReceiver.ACTION_DELIVERED, uri, partTotal)
             else null
         sendViaSms(to, body, sentPi, deliveredPi)
 

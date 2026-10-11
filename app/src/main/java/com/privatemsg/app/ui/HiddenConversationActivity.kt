@@ -373,6 +373,7 @@ class HiddenConversationActivity : BaseActivity() {
 
         val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
         if (subId >= 0) SecureStore(this).setThreadSim(address, subId)
+        val partTotal = smsManager().divideMessage(textToSend).size.coerceAtLeast(1)
 
         // The public-store sweep and the encrypted inserts are disk + crypto work and
         // can take seconds on long threads, so the whole write phase runs on the
@@ -382,8 +383,8 @@ class HiddenConversationActivity : BaseActivity() {
             sweepPublicMessages(address)
             val rowId = hiddenDb.insert(address, textToSend, System.currentTimeMillis(), 4, subId)
             val deliveredPi =
-                if (SecureStore(this).deliveryReportForSub(subId)) hiddenDeliveryIntent(rowId) else null
-            val sentPi = hiddenSentIntent(rowId)
+                if (SecureStore(this).deliveryReportForSub(subId)) hiddenDeliveryIntent(rowId, partTotal) else null
+            val sentPi = hiddenSentIntent(rowId, partTotal)
             runOnUiThread {
                 binding.sendButton.isEnabled = true
                 if (isFinishing || isDestroyed) return@runOnUiThread
@@ -475,10 +476,11 @@ class HiddenConversationActivity : BaseActivity() {
     }
 
     /** Delivery report for a hidden message → updates its private-DB row. */
-    private fun hiddenDeliveryIntent(rowId: Long): PendingIntent {
+    private fun hiddenDeliveryIntent(rowId: Long, partTotal: Int): PendingIntent {
         val intent = Intent(this, SmsStatusReceiver::class.java)
             .setAction(SmsStatusReceiver.ACTION_HIDDEN_DELIVERED)
             .putExtra(SmsStatusReceiver.EXTRA_HIDDEN_ID, rowId)
+            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
         return PendingIntent.getBroadcast(
             this, rowId.toInt(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -486,10 +488,11 @@ class HiddenConversationActivity : BaseActivity() {
     }
 
     /** Send callback for a hidden message: queued → sent (or failed) in the private DB. */
-    private fun hiddenSentIntent(rowId: Long): PendingIntent {
+    private fun hiddenSentIntent(rowId: Long, partTotal: Int): PendingIntent {
         val intent = Intent(this, SmsStatusReceiver::class.java)
             .setAction(SmsStatusReceiver.ACTION_HIDDEN_SENT)
             .putExtra(SmsStatusReceiver.EXTRA_HIDDEN_ID, rowId)
+            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
         return PendingIntent.getBroadcast(
             this, rowId.toInt(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
