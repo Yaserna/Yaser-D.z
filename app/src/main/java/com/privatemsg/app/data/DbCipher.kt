@@ -45,13 +45,30 @@ object DbCipher {
      * usable on its own and stays valid across installs of the same app.
      */
     fun lookupHash(context: Context, value: String): String {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val salt = prefs.getString(FIELD_ADDR_SALT, null) ?: newSalt().also {
-            prefs.edit().putString(FIELD_ADDR_SALT, it).apply()
-        }
         val digest = java.security.MessageDigest.getInstance("SHA-256")
-        return digest.digest((salt + value).toByteArray(Charsets.UTF_8))
+        return digest.digest((saltFor(context) + value).toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
+    }
+
+    @Volatile
+    private var cachedSalt: String? = null
+
+    /**
+     * One-time read/creation of the address salt. Two threads racing to create it
+     * would persist different salts and permanently hide rows hashed with the loser,
+     * so creation is serialized and committed synchronously (an async apply could be
+     * lost if the process dies right after the first hidden insert).
+     */
+    private fun saltFor(context: Context): String {
+        cachedSalt?.let { return it }
+        synchronized(this) {
+            cachedSalt?.let { return it }
+            val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val salt = prefs.getString(FIELD_ADDR_SALT, null)
+                ?: newSalt().also { prefs.edit().putString(FIELD_ADDR_SALT, it).commit() }
+            cachedSalt = salt
+            return salt
+        }
     }
 
     private fun newSalt(): String {
