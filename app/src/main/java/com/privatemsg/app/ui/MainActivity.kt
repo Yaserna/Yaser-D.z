@@ -416,7 +416,7 @@ class MainActivity : BaseActivity() {
         // pays for the slow key derivation.
         val plausible = code.length in 4..12 && code.all { it.isDigit() }
         // While the PIN screen is in its cooldown, guessing the code here is blocked too.
-        val throttled = secure.pinLockUntil() > System.currentTimeMillis()
+        val throttled = secure.pinLockRemaining() > 0L
         val token = ++revealToken
         binding.privateEntry.visibility = View.GONE
         if (!throttled && plausible && secure.hasPin()) {

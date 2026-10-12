@@ -54,7 +54,7 @@ class PinActivity : BaseActivity() {
     private var lockoutTick: Runnable? = null
 
     private fun showLockout() {
-        val left = (secure.pinLockUntil() - System.currentTimeMillis()).coerceAtLeast(0L)
+        val left = secure.pinLockRemaining()
         lockoutTick?.let { binding.root.removeCallbacks(it) }
         lockoutTick = null
         if (left == 0L) {
@@ -98,7 +98,7 @@ class PinActivity : BaseActivity() {
 
     private fun append(d: Char) {
         // Guessing is rate limited: while the cooldown runs the keypad does nothing.
-        if (secure.pinLockUntil() > System.currentTimeMillis()) {
+        if (secure.pinLockRemaining() > 0L) {
             showLockout()
             return
         }
@@ -114,7 +114,7 @@ class PinActivity : BaseActivity() {
     }
 
     private fun submit() {
-        if (secure.pinLockUntil() > System.currentTimeMillis()) {
+        if (secure.pinLockRemaining() > 0L) {
             showLockout()
             return
         }

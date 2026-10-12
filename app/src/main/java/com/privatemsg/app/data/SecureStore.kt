@@ -1,6 +1,7 @@
 ﻿package com.privatemsg.app.data
 
 import android.content.Context
+import android.os.SystemClock
 import java.security.MessageDigest
 import java.security.SecureRandom
 
@@ -29,6 +30,8 @@ class SecureStore(context: Context) {
             .putInt(KEY_PIN_ITERATIONS, PIN_ITERATIONS)
             .remove(KEY_PIN_FAILS)
             .remove(KEY_PIN_LOCK_UNTIL)
+            .remove(KEY_PIN_LOCK_BOOT_MS)
+            .remove(KEY_PIN_LOCK_BOOT_WRITTEN)
             .apply()
     }
 
@@ -47,25 +50,44 @@ class SecureStore(context: Context) {
     }
 
     /**
-     * Cooldown until which the code is refused everywhere - on the unlock screen and in
-     * the search box. Only wrong taps on the unlock screen extend it: a parent searching
-     * with an ordinary phone number must never be locked out of their own app.
+     * Milliseconds still to wait before the code is accepted again - on the unlock screen
+     * and in the search box. Only wrong taps there extend it: a parent searching with an
+     * ordinary phone number must never be locked out of their own app.
+     *
+     * The wait is measured on the clock that counts up since the phone booted, which no
+     * setting can move; measuring it with the wall clock let anyone skip it by winding the
+     * date forward. A reboot restarts that clock from zero, so after one the wall clock is
+     * the only thing left to judge the wait by.
      */
-    fun pinLockUntil(): Long = prefs.getLong(KEY_PIN_LOCK_UNTIL, 0L)
+    fun pinLockRemaining(): Long {
+        val wallLeft = (prefs.getLong(KEY_PIN_LOCK_UNTIL, 0L) - System.currentTimeMillis()).coerceAtLeast(0L)
+        val bootDeadline = prefs.getLong(KEY_PIN_LOCK_BOOT_MS, 0L)
+        if (bootDeadline == 0L) return wallLeft
+        val elapsed = SystemClock.elapsedRealtime()
+        return if (elapsed < prefs.getLong(KEY_PIN_LOCK_BOOT_WRITTEN, 0L)) wallLeft
+        else (bootDeadline - elapsed).coerceAtLeast(0L)
+    }
 
     fun recordPinFailure(): Int {
         val fails = prefs.getInt(KEY_PIN_FAILS, 0) + 1
         val edit = prefs.edit().putInt(KEY_PIN_FAILS, fails)
         if (fails >= PIN_FAIL_LIMIT) {
             val waitMs = PIN_BASE_WAIT_MS * (1L shl (fails - PIN_FAIL_LIMIT).coerceAtMost(4))
+            val elapsed = SystemClock.elapsedRealtime()
             edit.putLong(KEY_PIN_LOCK_UNTIL, System.currentTimeMillis() + waitMs)
+                .putLong(KEY_PIN_LOCK_BOOT_MS, elapsed + waitMs)
+                .putLong(KEY_PIN_LOCK_BOOT_WRITTEN, elapsed)
         }
         edit.apply()
         return fails
     }
 
     fun clearPinFailures() {
-        prefs.edit().remove(KEY_PIN_FAILS).remove(KEY_PIN_LOCK_UNTIL).apply()
+        prefs.edit().remove(KEY_PIN_FAILS)
+            .remove(KEY_PIN_LOCK_UNTIL)
+            .remove(KEY_PIN_LOCK_BOOT_MS)
+            .remove(KEY_PIN_LOCK_BOOT_WRITTEN)
+            .apply()
     }
 
     var decoyName: String
@@ -466,6 +488,8 @@ class SecureStore(context: Context) {
         private const val KEY_PIN_ITERATIONS = "pin_iterations"
         private const val KEY_PIN_FAILS = "pin_fails"
         private const val KEY_PIN_LOCK_UNTIL = "pin_lock_until"
+        private const val KEY_PIN_LOCK_BOOT_MS = "pin_lock_boot_ms"
+        private const val KEY_PIN_LOCK_BOOT_WRITTEN = "pin_lock_boot_written"
         private const val PIN_ITERATIONS = 20000
         private const val PIN_FAIL_LIMIT = 5
         private const val PIN_BASE_WAIT_MS = 30_000L
