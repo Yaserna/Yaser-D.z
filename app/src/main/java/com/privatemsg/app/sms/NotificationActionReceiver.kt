@@ -119,11 +119,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
         }
         val parts = sm.divideMessage(body)
         if (parts.size > 1) {
-            sm.sendMultipartTextMessage(
-                address, null, parts,
-                sentPi?.let { List(parts.size) { it } },
-                deliveredPi?.let { List(parts.size) { it } }
-            )
+            // The multipart API wants one callback per part, in ArrayList form.
+            val sentIntents = sentPi?.let { pi -> ArrayList(parts.map { pi }) }
+            val deliveredIntents = deliveredPi?.let { pi -> ArrayList(parts.map { pi }) }
+            sm.sendMultipartTextMessage(address, null, ArrayList(parts), sentIntents, deliveredIntents)
         } else {
             sm.sendTextMessage(address, null, body, sentPi, deliveredPi)
         }

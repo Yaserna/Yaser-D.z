@@ -108,7 +108,7 @@ class ContactsHelper(private val context: Context) {
             watchInstalled = true
             lastAccess = hasReadAccess()
             context.applicationContext.contentResolver.registerContentObserver(
-                ContactsContract.CONTENT_URI, true, invalidator
+                ContactsContract.Contacts.CONTENT_URI, true, invalidator
             )
         }
     }
