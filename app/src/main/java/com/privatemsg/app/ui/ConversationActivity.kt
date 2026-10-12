@@ -176,15 +176,22 @@ class ConversationActivity : BaseActivity() {
                 if (c.moveToFirst()) {
                     val name = c.getString(0) ?: ""
                     val number = c.getString(1) ?: ""
-                    binding.input.setText("$name\n$number")
+                    binding.input.setText(
+                        getString(R.string.contact_card_format, name, number)
+                    )
                 }
             }
         }
     }
 
     private val requestLocation = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> if (granted) prefillLocation() }
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        // Android 12+ lets the user hand over only the approximate level, so either
+        // grant is usable; a flat refusal has to be said out loud, not swallowed.
+        if (grants.values.any { it }) prefillLocation()
+        else Toast.makeText(this, R.string.location_permission_denied, Toast.LENGTH_SHORT).show()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -441,10 +448,13 @@ class ConversationActivity : BaseActivity() {
                 0 -> pickContactToSend.launch(
                     Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
                 )
-                1 -> if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                    == PackageManager.PERMISSION_GRANTED
-                ) prefillLocation()
-                else requestLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                1 -> if (hasAnyLocationPermission()) prefillLocation()
+                else requestLocation.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
+                )
             }
         }
     }
@@ -499,6 +509,14 @@ class ConversationActivity : BaseActivity() {
         adapter.exitSelection()
     }
 
+    private fun hasAnyLocationPermission(): Boolean =
+        arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ).any {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+
     private fun prefillLocation() {
         try {
             val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -512,7 +530,8 @@ class ConversationActivity : BaseActivity() {
                 Toast.makeText(this, R.string.location_unavailable, Toast.LENGTH_SHORT).show()
             }
         } catch (e: SecurityException) {
-            // permission missing
+            // Only the approximate level was granted, so a provider can refuse the read.
+            Toast.makeText(this, R.string.location_unavailable, Toast.LENGTH_SHORT).show()
         }
     }
 
