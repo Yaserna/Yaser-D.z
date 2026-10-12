@@ -76,12 +76,15 @@ class SettingsActivity : BaseActivity() {
             binding.aboutArrow.text = if (open) "▾" else "▸"
         }
 
-        // Contact info: tap to dial / email.
+        // Contact info: tap to dial / email. The values are built at runtime so the
+        // packaged resources stay free of the readable number and address.
+        binding.contactPhoneValue.text = com.privatemsg.app.data.SupportContact.phone
+        binding.contactEmailValue.text = com.privatemsg.app.data.SupportContact.email
         binding.phoneRow.setOnClickListener {
             startSafely(
                 android.content.Intent(
                     android.content.Intent.ACTION_DIAL,
-                    android.net.Uri.parse("tel:" + getString(R.string.contact_phone))
+                    android.net.Uri.parse("tel:" + com.privatemsg.app.data.SupportContact.phone)
                 )
             )
         }
@@ -89,7 +92,7 @@ class SettingsActivity : BaseActivity() {
             startSafely(
                 android.content.Intent(
                     android.content.Intent.ACTION_SENDTO,
-                    android.net.Uri.parse("mailto:" + getString(R.string.contact_email))
+                    android.net.Uri.parse("mailto:" + com.privatemsg.app.data.SupportContact.email)
                 )
             )
         }

@@ -39,8 +39,6 @@
     <string name="section_contact">اطلاعات تماس</string>
     <string name="contact_phone_label">شماره تماس</string>
     <string name="contact_email_label">ایمیل</string>
-    <string name="contact_phone">+989035505150</string>
-    <string name="contact_email">Yas.nahouk@gmail.com</string>
     <string name="sim_label">سیم %1$d</string>
     <string name="notif_reply">پاسخ</string>
     <string name="notif_mark_read">خوانده شد</string>

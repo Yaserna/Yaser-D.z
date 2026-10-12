@@ -379,9 +379,9 @@
                 android:textSize="16sp" />
 
             <TextView
+                android:id="@+id/contactPhoneValue"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/contact_phone"
                 android:textColor="@color/accent"
                 android:textDirection="ltr"
                 android:textSize="15sp" />
@@ -408,9 +408,9 @@
                 android:textSize="16sp" />
 
             <TextView
+                android:id="@+id/contactEmailValue"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/contact_email"
                 android:textColor="@color/accent"
                 android:textDirection="ltr"
                 android:textSize="15sp" />
