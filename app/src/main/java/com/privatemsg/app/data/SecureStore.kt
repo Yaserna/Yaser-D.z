@@ -253,11 +253,19 @@ class SecureStore(context: Context) {
         }
     }
 
-    fun getHiddenNumbers(): Set<String> =
-        (prefs.getStringSet(KEY_HIDDEN, emptySet()) ?: emptySet())
-            .map { DbCipher.decrypt(appContext, it) }
-            .filter { it.isNotBlank() }
-            .toSet()
+    /**
+     * The hidden list is the one artefact that names this section outright, so every
+     * entry is stored ciphered. Old plain entries keep working: they read back as-is
+     * and are rewritten ciphered by the next add or remove.
+     */
+    fun getHiddenNumbers(): Set<String> = hiddenEntries()
+        .map { DbCipher.decrypt(appContext, it) }
+        .filter { it.isNotBlank() }
+        .toSet()
+
+    /** The stored forms, ciphered and legacy-plain alike. */
+    private fun hiddenEntries(): Set<String> =
+        prefs.getStringSet(KEY_HIDDEN, emptySet()) ?: emptySet()
 
     fun addHiddenNumber(number: String) {
         val set = getHiddenNumbers().toMutableSet()
@@ -271,16 +279,16 @@ class SecureStore(context: Context) {
         writeHiddenNumbers(set)
     }
 
-    /**
-     * The hidden list is the one artefact that names this section outright, so every
-     * entry is stored ciphered. Old plain entries keep working: they read back as-is
-     * and are rewritten ciphered by the next add or remove.
-     */
     private fun writeHiddenNumbers(numbers: Set<String>) {
         val stored = numbers.filter { it.isNotBlank() }
             .map { DbCipher.encrypt(appContext, it) }
             .toSet()
-        prefs.edit().putStringSet(KEY_HIDDEN, stored).apply()
+        // Entries this key can no longer open decrypt to nothing and would be dropped by
+        // the rewrite above; keep them so an unrelated edit cannot erase them.
+        val kept = hiddenEntries().filter {
+            DbCipher.isUndecryptable(appContext, it)
+        }.toSet()
+        prefs.edit().putStringSet(KEY_HIDDEN, stored + kept).apply()
     }
 
     fun isHidden(address: String): Boolean {

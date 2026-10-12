@@ -97,13 +97,17 @@ object DbCipher {
         }
     }
 
-    /** Reverses [encrypt]; values written before encryption existed come back as-is. */
+    /**
+     * Reverses [encrypt]; values written before encryption existed come back as-is. A value
+     * that carries the mark but this key cannot open comes back empty, never as ciphertext,
+     * so an unreadable row cannot print its own encrypted form on screen.
+     */
     fun decrypt(context: Context, stored: String): String {
         if (!isEncrypted(stored)) return stored
-        val key = keyFor(context) ?: return stored
+        val key = keyFor(context) ?: return ""
         return try {
             val raw = Base64.decode(stored.substring(MARK.length), Base64.NO_WRAP)
-            if (raw.size <= IV_LENGTH) return stored
+            if (raw.size <= IV_LENGTH) return ""
             val iv = raw.copyOfRange(0, IV_LENGTH)
             val body = raw.copyOfRange(IV_LENGTH, raw.size)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -111,9 +115,13 @@ object DbCipher {
             String(cipher.doFinal(body), Charsets.UTF_8)
         } catch (e: Exception) {
             Log.e(TAG, "decrypt failed", e)
-            stored
+            ""
         }
     }
+
+    /** True when the value was written ciphered but the current key can no longer open it. */
+    fun isUndecryptable(context: Context, stored: String): Boolean =
+        isEncrypted(stored) && decrypt(context, stored).isEmpty()
 
     private fun keyFor(context: Context): SecretKey? {
         cachedKey?.let { return it }

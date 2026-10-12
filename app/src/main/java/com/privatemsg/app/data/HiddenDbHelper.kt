@@ -220,7 +220,7 @@ class HiddenDbHelper(context: Context) :
                 latestByKey[key] = Conversation(
                     threadId = SecureStore.normalize(address).hashCode().toLong(),
                     address = address,
-                    snippet = decrypted(c.getString(2)),
+                    snippet = decryptedBody(c.getString(2)),
                     date = c.getLong(3)
                 )
             }
@@ -270,6 +270,12 @@ class HiddenDbHelper(context: Context) :
 
     private fun decrypted(stored: String?): String =
         stored?.let { DbCipher.decrypt(appContext, it) } ?: ""
+
+    /** A body whose cipher this key can no longer open shows a placeholder, never the ciphertext. */
+    private fun decryptedBody(stored: String?): String =
+        if (stored != null && DbCipher.isUndecryptable(appContext, stored))
+            appContext.getString(com.privatemsg.app.R.string.content_unavailable)
+        else decrypted(stored)
 
     companion object {
         private const val DB_NAME = "hidden.db"
