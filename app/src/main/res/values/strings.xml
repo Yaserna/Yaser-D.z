@@ -10,6 +10,10 @@
     <string name="attach_contact">ارسال مخاطب</string>
     <string name="attach_location">ارسال موقعیت مکانی</string>
     <string name="location_unavailable">موقعیت مکانی در دسترس نیست</string>
+    <string name="location_permission_denied">برای فرستادن موقعیت، اجازهٔ دسترسی به مکان را بدهید</string>
+    <string name="contact_card_format">%1$s\n%2$s</string>
+    <string name="meta_name_date">%1$s · %2$s</string>
+    <string name="time_with_badges">%1$s %2$s</string>
     <string name="send">ارسال</string>
     <string name="back">بازگشت</string>
     <string name="settings">تنظیمات</string>
@@ -30,7 +34,6 @@
     <string name="section_bubbles">رنگ حباب پیام‌ها</string>
     <string name="bubble_sent_color">رنگ پیام‌های ارسالی</string>
     <string name="bubble_received_color">رنگ پیام‌های دریافتی</string>
-    <string name="bubble_color_summary">رنگ پس‌زمینه‌ی حباب‌ها را انتخاب کنید</string>
     <string name="pick_color">انتخاب رنگ</string>
 
     <string name="section_about">درباره</string>
@@ -39,7 +42,6 @@
     <string name="section_contact">اطلاعات تماس</string>
     <string name="contact_phone_label">شماره تماس</string>
     <string name="contact_email_label">ایمیل</string>
-    <string name="sim_label">سیم %1$d</string>
     <string name="notif_reply">پاسخ</string>
     <string name="notif_mark_read">خوانده شد</string>
     <string name="notif_delete">حذف</string>
@@ -48,17 +50,12 @@
     <string name="send_failed">ارسال نشد</string>
     <string name="send_failed_notif">پیام ارسال نشد</string>
     <string name="content_unavailable">متن در دسترس نیست</string>
-    <string name="you_prefix">شما: </string>
     <string name="n_new_messages">%1$d پیام جدید</string>
     <string name="search_hint">جستجوی پیام‌ها</string>
-    <string name="delivered">دریافت شد</string>
     <string name="private_entry">Private</string>
     <string name="archive">بایگانی</string>
-    <string name="archived_toast">به بایگانی رفت</string>
-    <string name="unarchived_toast">از بایگانی خارج شد</string>
     <string name="archive_empty">بایگانی خالی است</string>
     <string name="unarchive">خروج از بایگانی</string>
-    <string name="open_archive">باز کردن بایگانی</string>
 
     <string name="section_theme">تم برنامه</string>
     <string name="theme_label">حالت روشن یا تیره</string>
@@ -127,7 +124,6 @@
     <string name="favorites_empty">هنوز پیامی به موارد پسندیده اضافه نشده</string>
     <string name="mms_arrived_title">پیام جدید</string>
     <string name="mms_arrived_text">یک پیام تصویری یا صوتی رسید؛ باز کردن این نوع پیام‌ها هنوز در این برنامه پیاده نشده است.</string>
-    <string name="delete_conversation">حذف گفتگو</string>
     <string name="mark_read">علامت‌گذاری به‌عنوان خوانده‌شده</string>
     <string name="mark_read_short">خوانده شد</string>
     <string name="select_all">انتخاب همه</string>

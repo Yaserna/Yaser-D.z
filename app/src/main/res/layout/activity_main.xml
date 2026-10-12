@@ -59,7 +59,7 @@
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/fab" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="bottom|end" android:layout_margin="22dp" android:contentDescription="@string/new_message" android:src="@drawable/ic_add" app:backgroundTint="@color/accent" app:fabCustomSize="56dp" app:maxImageSize="28dp" app:tint="@android:color/white" />
 
-    <LinearLayout android:id="@+id/selectionBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom" android:background="@color/surface" android:orientation="horizontal" android:paddingVertical="10dp" android:visibility="gone">
+    <LinearLayout android:id="@+id/selectionBar" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom" android:background="@color/surface" android:baselineAligned="false" android:orientation="horizontal" android:paddingVertical="10dp" android:visibility="gone">
 
         <LinearLayout android:id="@+id/actionRead" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:background="?attr/selectableItemBackground" android:gravity="center" android:orientation="vertical" android:paddingVertical="4dp">
 

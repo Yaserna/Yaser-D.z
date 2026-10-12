@@ -99,10 +99,13 @@ class MessageAdapter(
         val baseTime = android.text.format.DateUtils.formatDateTime(
             ctx, m.date, android.text.format.DateUtils.FORMAT_SHOW_TIME
         ).toLatinDigits()
-        val lockSign = if (m.isEncrypted) " 🔒" else ""
-        val canarySign = if (m.isFromHidden) " a+" else ""
-                val starSign = if (isStarred(m)) " ⭐" else ""
-        holder.binding.time.text = (baseTime + starSign + lockSign + canarySign).trim()
+        val badges = listOfNotNull(
+            if (isStarred(m)) "⭐" else null,
+            if (m.isEncrypted) "🔒" else null,
+            if (m.isFromHidden) "a+" else null
+        ).joinToString(" ")
+        holder.binding.time.text = if (badges.isEmpty()) baseTime
+        else ctx.getString(R.string.time_with_badges, baseTime, badges)
         holder.binding.time.setTextColor(
             if (isLight(bubbleColor)) 0xFF555555.toInt() else 0xFFCFCFCF.toInt()
         )

@@ -76,7 +76,9 @@ class FavoritesActivity : BaseActivity() {
             val f = items[position]
             holder.binding.body.text = f.body
             val date = DateUtils.getRelativeTimeSpanString(f.date).toString()
-            holder.binding.meta.text = "${contacts.displayFor(f.address)} · $date"
+            holder.binding.meta.text = holder.binding.root.context.getString(
+                R.string.meta_name_date, contacts.displayFor(f.address), date
+            )
             holder.binding.root.setOnLongClickListener { onLongClick(f); true }
         }
 
