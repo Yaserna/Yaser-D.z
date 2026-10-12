@@ -388,13 +388,21 @@ class MainActivity : BaseActivity() {
                         val dy = (e.y - pullStartY).coerceAtLeast(0f)
                         binding.recycler.translationY = (dy * 0.5f).coerceAtMost(maxPull)
                     }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    MotionEvent.ACTION_UP -> {
                         val triggered = binding.recycler.translationY >= threshold
                         binding.recycler.animate().translationY(0f).setDuration(180).start()
                         pulling = false
                         if (triggered) {
                             startActivity(Intent(this@MainActivity, DecoyPrivateActivity::class.java))
                         }
+                    }
+
+                    // An aborted touch - the shade stealing the drag, an incoming call
+                    // overlay, the app moving to the background - must never open the
+                    // decoy folder on its own; it only springs the list back.
+                    MotionEvent.ACTION_CANCEL -> {
+                        binding.recycler.animate().translationY(0f).setDuration(180).start()
+                        pulling = false
                     }
                 }
             }
