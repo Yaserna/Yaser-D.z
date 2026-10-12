@@ -18,6 +18,13 @@ class PinActivity : BaseActivity() {
     private var settingUp = false
     private var promptedFingerprint = false
     private val entered = StringBuilder()
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** Bumped per check so a slow answer cannot act after the user moved on. */
+    private var checkToken = 0
+
+    /** Set once the hidden section has been launched, so no screen opens twice. */
+    private var opened = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,6 +79,7 @@ class PinActivity : BaseActivity() {
         // The countdown re-posts itself; drop the pending tick with the screen.
         lockoutTick?.let { binding.root.removeCallbacks(it) }
         lockoutTick = null
+        ioExecutor.shutdown()
     }
 
     private fun tryFingerprint() {
@@ -106,7 +114,37 @@ class PinActivity : BaseActivity() {
         binding.error.text = ""
         updateDots()
         // When unlocking, enter as soon as the correct PIN is typed (no confirm tap).
-        if (!settingUp && secure.checkPin(entered.toString())) openHidden()
+        if (!settingUp) verify(entered.toString(), reportFailure = false)
+    }
+
+    /**
+     * Checks [pin] on the worker thread. The key derivation deliberately takes tens of
+     * milliseconds to slow guessing down, which is far too long to spend between two
+     * keystrokes on the screen thread. A result that is no longer about the text currently
+     * typed is dropped, and only the confirm tap may report a wrong PIN, so a half-typed
+     * prefix never burns an attempt.
+     */
+    private fun verify(pin: String, reportFailure: Boolean) {
+        val token = ++checkToken
+        try {
+            ioExecutor.execute {
+                val matches = secure.checkPin(pin)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || token != checkToken) return@runOnUiThread
+                    if (matches) {
+                        openHidden()
+                    } else if (reportFailure) {
+                        binding.error.setText(R.string.pin_wrong)
+                        entered.clear()
+                        updateDots()
+                        secure.recordPinFailure()
+                        showLockout()
+                    }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Screen already torn down.
+        }
     }
 
     private fun updateDots() {
@@ -124,22 +162,24 @@ class PinActivity : BaseActivity() {
                 binding.error.setText(R.string.pin_too_short)
                 return
             }
-            secure.setPin(pin)
-            openHidden()
-        } else {
-            if (secure.checkPin(pin)) {
-                openHidden()
-            } else {
-                binding.error.setText(R.string.pin_wrong)
-                entered.clear()
-                updateDots()
-                secure.recordPinFailure()
-                showLockout()
+            val token = ++checkToken
+            try {
+                ioExecutor.execute {
+                    secure.setPin(pin)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && token == checkToken) openHidden()
+                    }
+                }
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
             }
+        } else {
+            verify(pin, reportFailure = true)
         }
     }
 
     private fun openHidden() {
+        if (opened) return
+        opened = true
         // A successful unlock re-opens the hidden section.
         secure.clearPinFailures()
         BaseActivity.hiddenLocked = false
