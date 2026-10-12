@@ -9,6 +9,16 @@ class SecureStore(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("secure_prefs", Context.MODE_PRIVATE)
 
+    /**
+     * Address-derived keys used to hold the normalized number in their name, so even with
+     * ciphered values the file still listed which numbers are hidden. Every such key now
+     * goes through this, which is the same opaque hash hidden.db uses for its address index.
+     */
+    private fun addrKey(address: String): String {
+        ensureAddressKeyMigration()
+        return DbCipher.lookupHash(appContext, normalize(address))
+    }
+
     fun hasPin(): Boolean = prefs.contains(KEY_PIN_HASH)
 
     fun setPin(pin: String) {
@@ -59,64 +69,196 @@ class SecureStore(context: Context) {
     }
 
     var decoyName: String
-        get() = prefs.getString(KEY_DECOY_NAME, "") ?: ""
-        set(v) = prefs.edit().putString(KEY_DECOY_NAME, v).apply()
+        get() = DbCipher.decrypt(appContext, prefs.getString(KEY_DECOY_NAME, "") ?: "")
+        set(v) = prefs.edit().putString(KEY_DECOY_NAME, DbCipher.encrypt(appContext, v)).apply()
 
     var decoyText: String
-        get() = prefs.getString(KEY_DECOY_TEXT, "") ?: ""
-        set(v) = prefs.edit().putString(KEY_DECOY_TEXT, v).apply()
+        get() = DbCipher.decrypt(appContext, prefs.getString(KEY_DECOY_TEXT, "") ?: "")
+        set(v) = prefs.edit().putString(KEY_DECOY_TEXT, DbCipher.encrypt(appContext, v)).apply()
 
     var decoyTarget: String
-        get() = prefs.getString(KEY_DECOY_TARGET, "") ?: ""
-        set(v) = prefs.edit().putString(KEY_DECOY_TARGET, v).apply()
+        get() = DbCipher.decrypt(appContext, prefs.getString(KEY_DECOY_TARGET, "") ?: "")
+        set(v) = prefs.edit().putString(KEY_DECOY_TARGET, DbCipher.encrypt(appContext, v)).apply()
 
     fun decoyNameFor(address: String): String =
-        prefs.getString(KEY_DECOY_NAME + "_" + normalize(address), null) ?: decoyName
+        decoyEntryFor(address)?.get(0)?.takeIf { it.isNotEmpty() } ?: decoyName
 
     fun decoyTextFor(address: String): String =
-        prefs.getString(KEY_DECOY_TEXT + "_" + normalize(address), null) ?: decoyText
+        decoyEntryFor(address)?.get(1)?.takeIf { it.isNotEmpty() } ?: decoyText
 
     fun decoyTargetFor(address: String): String =
-        prefs.getString(KEY_DECOY_TARGET + "_" + normalize(address), null) ?: decoyTarget
+        decoyEntryFor(address)?.get(2) ?: decoyTarget
 
-    fun hasCustomDecoy(address: String): Boolean {
-        val n = normalize(address)
-        return prefs.contains(KEY_DECOY_NAME + "_" + n) ||
-            prefs.contains(KEY_DECOY_TEXT + "_" + n) ||
-            prefs.contains(KEY_DECOY_TARGET + "_" + n)
-    }
+    fun hasCustomDecoy(address: String): Boolean = decoyEntryFor(address) != null
 
     fun setDecoyFor(address: String, name: String, text: String, target: String) {
-        val n = normalize(address)
-        prefs.edit()
-            .putString(KEY_DECOY_NAME + "_" + n, name)
-            .putString(KEY_DECOY_TEXT + "_" + n, text)
-            .putString(KEY_DECOY_TARGET + "_" + n, target)
-            .apply()
+        val entries = readDecoys().toMutableMap()
+        entries[addrKey(address)] = listOf(
+            DbCipher.encrypt(appContext, name),
+            DbCipher.encrypt(appContext, text),
+            DbCipher.encrypt(appContext, target)
+        )
+        writeDecoys(entries)
     }
 
     fun clearDecoyFor(address: String) {
-        val n = normalize(address)
-        prefs.edit()
-            .remove(KEY_DECOY_NAME + "_" + n)
-            .remove(KEY_DECOY_TEXT + "_" + n)
-            .remove(KEY_DECOY_TARGET + "_" + n)
-            .apply()
+        val entries = readDecoys().toMutableMap()
+        entries.remove(addrKey(address))
+        writeDecoys(entries)
+    }
+
+    /** The three saved decoy fields of one address, already decrypted. */
+    private fun decoyEntryFor(address: String): List<String>? =
+        readDecoys()[addrKey(address)]?.map { DbCipher.decrypt(appContext, it) }
+
+    /**
+     * Decoy settings used to be three separate entries per address, which spelled the
+     * hidden number out in the preference file's key names. They now live as one opaque
+     * blob under a single neutral key, migrated from the old shape on first use.
+     */
+    private fun readDecoys(): Map<String, List<String>> {
+        ensureDecoyMigration()
+        return readDecoysRaw()
+    }
+
+    /** Parses the blob without running the migration, so the migration can extend it. */
+    private fun readDecoysRaw(): Map<String, List<String>> {
+        val blob = prefs.getString(KEY_DECOY_BLOB, "") ?: ""
+        if (blob.isEmpty()) return emptyMap()
+        val out = LinkedHashMap<String, List<String>>()
+        for (line in blob.split("\n")) {
+            if (line.isBlank()) continue
+            val parts = line.split("\t")
+            if (parts.size < 4) continue
+            out[parts[0]] = listOf(parts[1], parts[2], parts[3])
+        }
+        return out
+    }
+
+    private fun writeDecoys(entries: Map<String, List<String>>) {
+        val blob = entries.entries.joinToString("\n") { (key, values) ->
+            "$key\t${values[0]}\t${values[1]}\t${values[2]}"
+        }
+        prefs.edit().putString(KEY_DECOY_BLOB, blob).apply()
+    }
+
+    private fun ensureDecoyMigration() {
+        if (decoyMigrated) return
+        synchronized(decoyMigrationLock) {
+            if (decoyMigrated) return
+            val entries = LinkedHashMap<String, List<String>>()
+            val legacyNames = mutableSetOf<String>()
+            for (prefix in listOf(KEY_DECOY_NAME, KEY_DECOY_TEXT, KEY_DECOY_TARGET)) {
+                for (key in prefs.all.keys) {
+                    if (key.length > prefix.length + 1 && key.startsWith(prefix + "_")) {
+                        legacyNames.add(key.substring(prefix.length + 1))
+                    }
+                }
+            }
+            for (n in legacyNames) {
+                // Ciphering again is a no-op for values the new build already wrote,
+                // and it upgrades the ones left over from the plain-text build.
+                entries[DbCipher.lookupHash(appContext, normalize(n))] = listOf(
+                    DbCipher.encrypt(appContext, prefs.getString("${KEY_DECOY_NAME}_$n", "") ?: ""),
+                    DbCipher.encrypt(appContext, prefs.getString("${KEY_DECOY_TEXT}_$n", "") ?: ""),
+                    DbCipher.encrypt(appContext, prefs.getString("${KEY_DECOY_TARGET}_$n", "") ?: "")
+                )
+            }
+            if (legacyNames.isNotEmpty()) {
+                // Only touch the blob when there is something to fold into it; rewriting
+                // unconditionally would drop the entries of an already-migrated install.
+                val edit = prefs.edit()
+                val merged = LinkedHashMap(readDecoysRaw()).apply { putAll(entries) }
+                edit.putString(
+                    KEY_DECOY_BLOB,
+                    merged.entries.joinToString("\n") { (key, values) ->
+                        "$key\t${values[0]}\t${values[1]}\t${values[2]}"
+                    }
+                )
+                for (n in legacyNames) {
+                    edit.remove("${KEY_DECOY_NAME}_$n")
+                        .remove("${KEY_DECOY_TEXT}_$n")
+                        .remove("${KEY_DECOY_TARGET}_$n")
+                }
+                edit.apply()
+            }
+            decoyMigrated = true
+        }
+    }
+
+    /**
+     * One-time rewrite of every address-suffixed preference key and of the pinned and
+     * archived address sets, whose members were the numbers themselves. Values are moved
+     * as stored; only the names change. Runs before any address read, so a key is never
+     * looked up under both shapes.
+     */
+    private fun ensureAddressKeyMigration() {
+        if (addressKeysMigrated) return
+        synchronized(addressKeyMigrationLock) {
+            if (addressKeysMigrated) return
+            // The flag is part of the edit below, so a finished migration is recognised
+            // by every later process. Without it a second run would hash the hashes.
+            if (prefs.getBoolean(KEY_ADDRESS_KEYS_V2, false)) {
+                addressKeysMigrated = true
+                return
+            }
+            val edit = prefs.edit()
+            for ((key, value) in prefs.all) {
+                val prefix = ADDRESS_KEY_PREFIXES.firstOrNull {
+                    key.length > it.length + 1 && key.startsWith("${it}_")
+                } ?: continue
+                val hashed = "${prefix}_${DbCipher.lookupHash(appContext, key.substring(prefix.length + 1))}"
+                when (value) {
+                    is String -> edit.putString(hashed, value)
+                    is Int -> edit.putInt(hashed, value)
+                    is Long -> edit.putLong(hashed, value)
+                    is Boolean -> edit.putBoolean(hashed, value)
+                    is Float -> edit.putFloat(hashed, value)
+                }
+                edit.remove(key)
+            }
+            for (key in listOf(KEY_PINNED_ADDR, KEY_ARCHIVED_ADDR)) {
+                val members = prefs.getStringSet(key, emptySet()) ?: emptySet()
+                if (members.isNotEmpty()) {
+                    edit.putStringSet(
+                        key,
+                        members.map { DbCipher.lookupHash(appContext, normalize(it)) }.toSet()
+                    )
+                }
+            }
+            edit.putBoolean(KEY_ADDRESS_KEYS_V2, true).apply()
+            addressKeysMigrated = true
+        }
     }
 
     fun getHiddenNumbers(): Set<String> =
-        prefs.getStringSet(KEY_HIDDEN, emptySet())?.toSet() ?: emptySet()
+        (prefs.getStringSet(KEY_HIDDEN, emptySet()) ?: emptySet())
+            .map { DbCipher.decrypt(appContext, it) }
+            .filter { it.isNotBlank() }
+            .toSet()
 
     fun addHiddenNumber(number: String) {
         val set = getHiddenNumbers().toMutableSet()
         set.add(number.trim())
-        prefs.edit().putStringSet(KEY_HIDDEN, set).apply()
+        writeHiddenNumbers(set)
     }
 
     fun removeHiddenNumber(number: String) {
         val target = normalize(number)
         val set = getHiddenNumbers().filterNot { normalize(it) == target }.toSet()
-        prefs.edit().putStringSet(KEY_HIDDEN, set).apply()
+        writeHiddenNumbers(set)
+    }
+
+    /**
+     * The hidden list is the one artefact that names this section outright, so every
+     * entry is stored ciphered. Old plain entries keep working: they read back as-is
+     * and are rewritten ciphered by the next add or remove.
+     */
+    private fun writeHiddenNumbers(numbers: Set<String>) {
+        val stored = numbers.filter { it.isNotBlank() }
+            .map { DbCipher.encrypt(appContext, it) }
+            .toSet()
+        prefs.edit().putStringSet(KEY_HIDDEN, stored).apply()
     }
 
     fun isHidden(address: String): Boolean {
@@ -127,12 +269,12 @@ class SecureStore(context: Context) {
     // متدهای نشانی‌محور پایدار
     fun isPinned(address: String): Boolean {
         if (address.isBlank()) return false
-        return prefs.getStringSet(KEY_PINNED_ADDR, emptySet())?.contains(normalize(address)) == true
+        return prefs.getStringSet(KEY_PINNED_ADDR, emptySet())?.contains(addrKey(address)) == true
     }
 
     fun setPinned(address: String, pinned: Boolean) {
         if (address.isBlank()) return
-        val norm = normalize(address)
+        val norm = addrKey(address)
         val set = (prefs.getStringSet(KEY_PINNED_ADDR, emptySet()) ?: emptySet()).toMutableSet()
         if (pinned) set.add(norm) else set.remove(norm)
         prefs.edit().putStringSet(KEY_PINNED_ADDR, set).apply()
@@ -140,7 +282,7 @@ class SecureStore(context: Context) {
 
     fun togglePin(address: String): Boolean {
         if (address.isBlank()) return false
-        val norm = normalize(address)
+        val norm = addrKey(address)
         val set = (prefs.getStringSet(KEY_PINNED_ADDR, emptySet()) ?: emptySet()).toMutableSet()
         val next = set.add(norm)
         if (!next) set.remove(norm)
@@ -163,12 +305,12 @@ class SecureStore(context: Context) {
 
     fun isArchived(address: String): Boolean {
         if (address.isBlank()) return false
-        return prefs.getStringSet(KEY_ARCHIVED_ADDR, emptySet())?.contains(normalize(address)) == true
+        return prefs.getStringSet(KEY_ARCHIVED_ADDR, emptySet())?.contains(addrKey(address)) == true
     }
 
     fun setArchived(address: String, archived: Boolean) {
         if (address.isBlank()) return
-        val norm = normalize(address)
+        val norm = addrKey(address)
         val set = (prefs.getStringSet(KEY_ARCHIVED_ADDR, emptySet()) ?: emptySet()).toMutableSet()
         if (archived) set.add(norm) else set.remove(norm)
         prefs.edit().putStringSet(KEY_ARCHIVED_ADDR, set).apply()
@@ -224,11 +366,11 @@ class SecureStore(context: Context) {
     fun hiddenAliasFor(address: String): String? =
         DbCipher.decrypt(
             appContext,
-            prefs.getString(KEY_HIDDEN_ALIAS + "_" + normalize(address), "") ?: ""
+            prefs.getString("${KEY_HIDDEN_ALIAS}_${addrKey(address)}", "") ?: ""
         ).takeIf { it.isNotBlank() }
 
     fun setHiddenAlias(address: String, name: String) {
-        val key = KEY_HIDDEN_ALIAS + "_" + normalize(address)
+        val key = "${KEY_HIDDEN_ALIAS}_${addrKey(address)}"
         if (name.isBlank()) prefs.edit().remove(key).apply()
         else prefs.edit().putString(key, DbCipher.encrypt(appContext, name.trim())).apply()
     }
@@ -243,39 +385,41 @@ class SecureStore(context: Context) {
 
     fun recordConversationOpened(address: String) {
         if (address.isBlank()) return
-        prefs.edit().putLong("opened_" + normalize(address), System.currentTimeMillis()).apply()
+        prefs.edit().putLong("${KEY_OPENED}_${addrKey(address)}", System.currentTimeMillis()).apply()
     }
 
     fun openedAt(address: String): Long =
-        if (address.isBlank()) 0L else prefs.getLong("opened_" + normalize(address), 0L)
+        if (address.isBlank()) 0L
+        else prefs.getLong("${KEY_OPENED}_${addrKey(address)}", 0L)
 
     fun getDraft(address: String): String =
         if (address.isBlank()) "" else DbCipher.decrypt(
             appContext,
-            prefs.getString("draft_" + normalize(address), "") ?: ""
+            prefs.getString("${KEY_DRAFT}_${addrKey(address)}", "") ?: ""
         )
 
     fun setDraft(address: String, text: String) {
         if (address.isBlank()) return
-        val key = "draft_" + normalize(address)
+        val key = "${KEY_DRAFT}_${addrKey(address)}"
         if (text.isBlank()) prefs.edit().remove(key).apply()
         else prefs.edit().putString(key, DbCipher.encrypt(appContext, text)).apply()
     }
 
     fun getThreadSim(address: String): Int =
-        if (address.isBlank()) -1 else prefs.getInt("sim_" + normalize(address), -1)
+        if (address.isBlank()) -1 else prefs.getInt("${KEY_THREAD_SIM}_${addrKey(address)}", -1)
 
     fun setThreadSim(address: String, subId: Int) {
         if (address.isBlank()) return
-        prefs.edit().putInt("sim_" + normalize(address), subId).apply()
+        prefs.edit().putInt("${KEY_THREAD_SIM}_${addrKey(address)}", subId).apply()
     }
 
     fun isMuted(address: String): Boolean =
-        if (address.isBlank()) false else prefs.getBoolean(KEY_MUTED + "_" + normalize(address), false)
+        if (address.isBlank()) false
+        else prefs.getBoolean("${KEY_MUTED}_${addrKey(address)}", false)
 
     fun setMuted(address: String, muted: Boolean) {
         if (address.isBlank()) return
-        val key = KEY_MUTED + "_" + normalize(address)
+        val key = "${KEY_MUTED}_${addrKey(address)}"
         if (muted) prefs.edit().putBoolean(key, true).apply()
         else prefs.edit().remove(key).apply()
     }
@@ -287,11 +431,12 @@ class SecureStore(context: Context) {
     }
 
     fun isEncryptionEnabled(address: String): Boolean =
-        if (address.isBlank()) true else prefs.getBoolean("enc_mode_" + normalize(address), true)
+        if (address.isBlank()) true
+        else prefs.getBoolean("${KEY_ENC_MODE}_${addrKey(address)}", true)
 
     fun setEncryptionEnabled(address: String, enabled: Boolean) {
         if (address.isBlank()) return
-        prefs.edit().putBoolean("enc_mode_" + normalize(address), enabled).apply()
+        prefs.edit().putBoolean("${KEY_ENC_MODE}_${addrKey(address)}", enabled).apply()
     }
 
     fun toggleEncryption(address: String): Boolean {
@@ -301,11 +446,12 @@ class SecureStore(context: Context) {
     }
 
     fun isHoneypotEnabled(address: String): Boolean =
-        if (address.isBlank()) true else prefs.getBoolean("honeypot_mode_" + normalize(address), true)
+        if (address.isBlank()) true
+        else prefs.getBoolean("${KEY_HONEYPOT_MODE}_${addrKey(address)}", true)
 
     fun setHoneypotEnabled(address: String, enabled: Boolean) {
         if (address.isBlank()) return
-        prefs.edit().putBoolean("honeypot_mode_" + normalize(address), enabled).apply()
+        prefs.edit().putBoolean("${KEY_HONEYPOT_MODE}_${addrKey(address)}", enabled).apply()
     }
 
     fun toggleHoneypot(address: String): Boolean {
@@ -326,6 +472,22 @@ class SecureStore(context: Context) {
         private const val KEY_DECOY_NAME = "decoy_name"
         private const val KEY_DECOY_TEXT = "decoy_text"
         private const val KEY_DECOY_TARGET = "decoy_target"
+        private const val KEY_DECOY_BLOB = "decoy_entries"
+        private val decoyMigrationLock = Any()
+
+        @Volatile
+        private var decoyMigrated = false
+
+        private const val KEY_DRAFT = "draft"
+        private const val KEY_THREAD_SIM = "sim"
+        private const val KEY_OPENED = "opened"
+        private const val KEY_ENC_MODE = "enc_mode"
+        private const val KEY_HONEYPOT_MODE = "honeypot_mode"
+        private const val KEY_ADDRESS_KEYS_V2 = "address_keys_v2"
+        private val addressKeyMigrationLock = Any()
+
+        @Volatile
+        private var addressKeysMigrated = false
         private const val KEY_HIDDEN = "hidden_numbers"
         private const val KEY_PINNED = "pinned_threads"
         private const val KEY_PINNED_ADDR = "pinned_addresses"
@@ -340,6 +502,12 @@ class SecureStore(context: Context) {
         private const val KEY_APP_ICON = "app_icon"
         private const val KEY_HIDDEN_ALIAS = "hidden_alias"
         private const val KEY_MUTED = "muted_thread"
+
+        /** Key names that used to end in the normalized number itself. */
+        private val ADDRESS_KEY_PREFIXES = listOf(
+            KEY_HIDDEN_ALIAS, KEY_MUTED, KEY_DRAFT, KEY_THREAD_SIM,
+            KEY_OPENED, KEY_ENC_MODE, KEY_HONEYPOT_MODE
+        )
 
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
