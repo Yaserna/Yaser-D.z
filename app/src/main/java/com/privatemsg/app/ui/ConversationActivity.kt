@@ -114,7 +114,7 @@ class ConversationActivity : BaseActivity() {
         SecureStore(this).recordConversationOpened(to)
         // If nothing is typed yet, bring back this conversation's saved draft.
         if (binding.input.text.isNullOrEmpty()) binding.input.setText(SecureStore(this).getDraft(to))
-        repo.markThreadRead(threadId)
+        markRead(threadId)
         loadMessages()
         binding.input.requestFocus()
     }
@@ -301,7 +301,7 @@ class ConversationActivity : BaseActivity() {
     private val refreshReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, i: Intent?) {
             if (threadId > 0) {
-                repo.markThreadRead(threadId)
+                markRead(threadId)
                 loadMessages()
             }
         }
@@ -313,7 +313,7 @@ class ConversationActivity : BaseActivity() {
         override fun onChange(selfChange: Boolean) {
             if (threadId > 0) {
                 // The chat is open, so keep its messages read while a new one arrives.
-                repo.markThreadRead(threadId)
+                markRead(threadId)
                 loadMessages()
             }
         }
@@ -331,7 +331,7 @@ class ConversationActivity : BaseActivity() {
             SecureStore(this).recordConversationOpened(address)
         }
         if (threadId > 0) {
-            repo.markThreadRead(threadId)
+            markRead(threadId)
             loadMessages()
         }
     }
@@ -633,7 +633,23 @@ class ConversationActivity : BaseActivity() {
         )
     }
 
-        private fun loadMessages() {
+    /**
+     * Marking the thread read is a provider write; on a chat with many unread messages it
+     * blocks long enough to drop frames, so it runs on this screen's worker. Queued ahead of
+     * the load on the same single thread, the list still reads the freshly-cleared state.
+     */
+    private fun markRead(id: Long) {
+        if (id <= 0) return
+        runIo {
+            try {
+                repo.markThreadRead(id)
+            } catch (e: Exception) {
+                android.util.Log.e("ConversationActivity", "mark read failed", e)
+            }
+        }
+    }
+
+    private fun loadMessages() {
         val id = threadId
         if (id <= 0) return
         // Reading a thread is a provider query: it can take long enough to drop
