@@ -6,6 +6,7 @@ import java.security.SecureRandom
 
 class SecureStore(context: Context) {
 
+    private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("secure_prefs", Context.MODE_PRIVATE)
 
     fun hasPin(): Boolean = prefs.contains(KEY_PIN_HASH)
@@ -221,12 +222,15 @@ class SecureStore(context: Context) {
         set(v) = prefs.edit().putString(KEY_APP_ICON, v).apply()
 
     fun hiddenAliasFor(address: String): String? =
-        prefs.getString(KEY_HIDDEN_ALIAS + "_" + normalize(address), null)?.takeIf { it.isNotBlank() }
+        DbCipher.decrypt(
+            appContext,
+            prefs.getString(KEY_HIDDEN_ALIAS + "_" + normalize(address), "") ?: ""
+        ).takeIf { it.isNotBlank() }
 
     fun setHiddenAlias(address: String, name: String) {
         val key = KEY_HIDDEN_ALIAS + "_" + normalize(address)
         if (name.isBlank()) prefs.edit().remove(key).apply()
-        else prefs.edit().putString(key, name.trim()).apply()
+        else prefs.edit().putString(key, DbCipher.encrypt(appContext, name.trim())).apply()
     }
 
     var sentBubbleColor: Int
@@ -246,13 +250,16 @@ class SecureStore(context: Context) {
         if (address.isBlank()) 0L else prefs.getLong("opened_" + normalize(address), 0L)
 
     fun getDraft(address: String): String =
-        if (address.isBlank()) "" else prefs.getString("draft_" + normalize(address), "") ?: ""
+        if (address.isBlank()) "" else DbCipher.decrypt(
+            appContext,
+            prefs.getString("draft_" + normalize(address), "") ?: ""
+        )
 
     fun setDraft(address: String, text: String) {
         if (address.isBlank()) return
         val key = "draft_" + normalize(address)
         if (text.isBlank()) prefs.edit().remove(key).apply()
-        else prefs.edit().putString(key, text).apply()
+        else prefs.edit().putString(key, DbCipher.encrypt(appContext, text)).apply()
     }
 
     fun getThreadSim(address: String): Int =
