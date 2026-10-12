@@ -297,17 +297,12 @@ class MainActivity : BaseActivity() {
                             }
                         }
                         Action.READ -> repo.markThreadRead(id)
-                        Action.PIN -> {
-                            if (addr.isNotBlank()) secure.setPinned(addr, wantPin)
-                            else secure.togglePin(id)
-                        }
-                        Action.MUTE -> {
-                            if (addr.isNotBlank()) secure.setMuted(addr, wantMute)
-                        }
-                        Action.ARCHIVE -> {
-                            if (addr.isNotBlank()) secure.setArchived(addr, wantArchive)
-                            else secure.setArchived(id, !secure.isArchived(id))
-                        }
+                        // Every flag is stored and read by address, so a thread without one
+                        // has nowhere to record the change - writing it by thread id would go
+                        // into a set no screen ever looks at.
+                        Action.PIN -> if (addr.isNotBlank()) secure.setPinned(addr, wantPin)
+                        Action.MUTE -> if (addr.isNotBlank()) secure.setMuted(addr, wantMute)
+                        Action.ARCHIVE -> if (addr.isNotBlank()) secure.setArchived(addr, wantArchive)
                     }
                 }
             } catch (e: Exception) {

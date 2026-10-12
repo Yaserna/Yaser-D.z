@@ -310,29 +310,6 @@ class SecureStore(context: Context) {
         prefs.edit().putStringSet(KEY_PINNED_ADDR, set).apply()
     }
 
-    fun togglePin(address: String): Boolean {
-        if (address.isBlank()) return false
-        val norm = addrKey(address)
-        val set = (prefs.getStringSet(KEY_PINNED_ADDR, emptySet()) ?: emptySet()).toMutableSet()
-        val next = set.add(norm)
-        if (!next) set.remove(norm)
-        prefs.edit().putStringSet(KEY_PINNED_ADDR, set).apply()
-        return next
-    }
-
-    // متدهای سازگاری موقت برای threadId
-    fun isPinned(threadId: Long): Boolean =
-        prefs.getStringSet(KEY_PINNED, emptySet())?.contains(threadId.toString()) == true
-
-    fun togglePin(threadId: Long): Boolean {
-        val set = (prefs.getStringSet(KEY_PINNED, emptySet()) ?: emptySet()).toMutableSet()
-        val key = threadId.toString()
-        val next = set.add(key)
-        if (!next) set.remove(key)
-        prefs.edit().putStringSet(KEY_PINNED, set).apply()
-        return next
-    }
-
     fun isArchived(address: String): Boolean {
         if (address.isBlank()) return false
         return prefs.getStringSet(KEY_ARCHIVED_ADDR, emptySet())?.contains(addrKey(address)) == true
@@ -345,19 +322,6 @@ class SecureStore(context: Context) {
         if (archived) set.add(norm) else set.remove(norm)
         prefs.edit().putStringSet(KEY_ARCHIVED_ADDR, set).apply()
     }
-
-    fun isArchived(threadId: Long): Boolean =
-        prefs.getStringSet(KEY_ARCHIVED, emptySet())?.contains(threadId.toString()) == true
-
-    fun setArchived(threadId: Long, archived: Boolean) {
-        val set = (prefs.getStringSet(KEY_ARCHIVED, emptySet()) ?: emptySet()).toMutableSet()
-        val key = threadId.toString()
-        if (archived) set.add(key) else set.remove(key)
-        prefs.edit().putStringSet(KEY_ARCHIVED, set).apply()
-    }
-
-    fun getArchived(): Set<Long> =
-        prefs.getStringSet(KEY_ARCHIVED, emptySet())?.mapNotNull { it.toLongOrNull() }?.toSet() ?: emptySet()
 
     var deliveryReportEnabled: Boolean
         get() = prefs.getBoolean(KEY_DELIVERY, true)
@@ -454,12 +418,6 @@ class SecureStore(context: Context) {
         else prefs.edit().remove(key).apply()
     }
 
-    fun toggleMute(address: String): Boolean {
-        val next = !isMuted(address)
-        setMuted(address, next)
-        return next
-    }
-
     fun isEncryptionEnabled(address: String): Boolean =
         if (address.isBlank()) true
         else prefs.getBoolean("${KEY_ENC_MODE}_${addrKey(address)}", true)
@@ -521,9 +479,7 @@ class SecureStore(context: Context) {
         @Volatile
         private var addressKeysMigrated = false
         private const val KEY_HIDDEN = "hidden_numbers"
-        private const val KEY_PINNED = "pinned_threads"
         private const val KEY_PINNED_ADDR = "pinned_addresses"
-        private const val KEY_ARCHIVED = "archived_threads"
         private const val KEY_ARCHIVED_ADDR = "archived_addresses"
         private const val KEY_DELIVERY = "delivery_report"
         private const val KEY_FONT_SCALE = "font_scale"
