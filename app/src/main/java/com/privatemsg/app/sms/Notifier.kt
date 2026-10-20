@@ -22,14 +22,14 @@ object Notifier {
     private const val DECOY_CHANNEL_ID = "decoy_sms_silent"
     private const val DECOY_SOUND_CHANNEL_ID = "decoy_sms_sound"
 
-    /** MMS notices are grouped per hour so a burst of them cannot flood the shade. */
-    private const val HOUR_WINDOW_MS = 3_600_000L
+    /** MMS notices are plain and one at a time: a fixed id keeps the shade free of stale copies. */
+    private const val MMS_NOTIF_ID = 900_002
 
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Messages",
+                context.getString(R.string.channel_name),
                 NotificationManager.IMPORTANCE_HIGH
             )
             channel.enableVibration(true)
@@ -42,7 +42,7 @@ object Notifier {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 DECOY_CHANNEL_ID,
-                "Messages",
+                context.getString(R.string.channel_name),
                 NotificationManager.IMPORTANCE_HIGH
             )
             channel.setSound(null, null)
@@ -56,7 +56,7 @@ object Notifier {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 DECOY_SOUND_CHANNEL_ID,
-                "Messages",
+                context.getString(R.string.channel_name),
                 NotificationManager.IMPORTANCE_HIGH
             )
             channel.enableVibration(true)
@@ -74,6 +74,27 @@ object Notifier {
         } catch (_: SecurityException) {}
     }
 
+    /**
+     * The thread of a sender, or -1 when the system cannot resolve one (an operator
+     * name, a short code). This call throws for those, and every caller here runs
+     * inside a broadcast where one exception drops the notification for a real message.
+     */
+    private fun threadIdFor(context: Context, address: String): Long = try {
+        Telephony.Threads.getOrCreateThreadId(context, address)
+    } catch (e: Exception) {
+        android.util.Log.e("Notifier", "no thread for this address", e)
+        -1L
+    }
+
+    /**
+     * A request code for one notification action. The action name and the message id
+     * both go in: without them two different messages produce intent-equal PendingIntents
+     * and FLAG_UPDATE_CURRENT silently rewrites the older one, so a "delete" button
+     * would act on the newest message instead of the one it was built for.
+     */
+    private fun actionCode(variant: String, address: String, messageId: Long): Int =
+        ("$variant|$address|$messageId").hashCode() and 0x7FFFFFFF
+
     fun showIncoming(context: Context, address: String, body: String, messageId: Long, subId: Int = -1) {
         if (SecureStore(context).isMuted(address)) {
             return
@@ -81,7 +102,7 @@ object Notifier {
 
         ensureChannel(context)
         val notifId = address.hashCode()
-        val threadId = Telephony.Threads.getOrCreateThreadId(context, address)
+        val threadId = threadIdFor(context, address)
 
         val tapIntent = Intent(context, ConversationActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -89,13 +110,16 @@ object Notifier {
             putExtra("thread_id", threadId)
         }
         val tapPi = PendingIntent.getActivity(
-            context, notifId, tapIntent,
+            context, actionCode("tap", address, messageId), tapIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         fun actionIntent(action: String): Intent =
             Intent(context, NotificationActionReceiver::class.java).apply {
                 setAction(action)
+                // A distinct data Uri per action and message, so the system keeps this
+                // button's callback instead of replacing another message's.
+                setData(android.net.Uri.parse("com.privatemsg.app:notif/$action/$messageId"))
                 putExtra("address", address)
                 putExtra("thread_id", threadId)
                 putExtra("message_id", messageId)
@@ -105,21 +129,24 @@ object Notifier {
 
         val replyOpenIntent = Intent(context, com.privatemsg.app.ui.QuickReplyActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            data = android.net.Uri.parse("com.privatemsg.app:notif/reply/$messageId")
             putExtra("address", address)
             putExtra("thread_id", threadId)
             putExtra("notif_id", notifId)
                 putExtra("sub_id", subId)
         }
         val replyPi = PendingIntent.getActivity(
-            context, notifId * 31 + 1, replyOpenIntent,
+            context, actionCode("reply", address, messageId), replyOpenIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val readPi = PendingIntent.getBroadcast(
-            context, notifId * 31 + 2, actionIntent(NotificationActionReceiver.ACTION_MARK_READ),
+            context, actionCode("read", address, messageId),
+            actionIntent(NotificationActionReceiver.ACTION_MARK_READ),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val deletePi = PendingIntent.getBroadcast(
-            context, notifId * 31 + 3, actionIntent(NotificationActionReceiver.ACTION_DELETE),
+            context, actionCode("delete", address, messageId),
+            actionIntent(NotificationActionReceiver.ACTION_DELETE),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -128,7 +155,11 @@ object Notifier {
         ).build()
 
         val title = ContactsHelper(context).displayFor(address)
-        val unread = SmsRepository(context).unreadBodies(threadId)
+        // Reading the unread rows is a provider query and the permission can be revoked
+        // between the message arriving and this notification being built.
+        val unread = if (threadId > 0) runCatching { SmsRepository(context).unreadBodies(threadId) }
+            .getOrDefault(emptyList())
+        else emptyList()
         val count = if (unread.isEmpty()) 1 else unread.size
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -171,9 +202,10 @@ object Notifier {
      */
     fun showMmsArrived(context: Context) {
         ensureChannel(context)
-        val notifId = ("mms_" + (System.currentTimeMillis() / HOUR_WINDOW_MS)).hashCode()
+        // One fixed id: every new notice replaces the previous one instead of a fresh
+        // hour getting its own, which used to leave stale notices in the shade.
         val tapPi = PendingIntent.getActivity(
-            context, notifId,
+            context, MMS_NOTIF_ID,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
@@ -191,7 +223,7 @@ object Notifier {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             builder.setDefaults(NotificationCompat.DEFAULT_VIBRATE)
         }
-        notify(context, notifId, builder)
+        notify(context, MMS_NOTIF_ID, builder)
         vibrateTiny(context)
     }
 
@@ -199,14 +231,14 @@ object Notifier {
         ensureChannel(context)
         val notifId = ("failed_" + address).hashCode()
         val title = ContactsHelper(context).displayFor(address)
-        val threadId = Telephony.Threads.getOrCreateThreadId(context, address)
+        val threadId = threadIdFor(context, address)
         val tapIntent = Intent(context, ConversationActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("address", address)
             putExtra("thread_id", threadId)
         }
         val tapPi = PendingIntent.getActivity(
-            context, notifId, tapIntent,
+            context, actionCode("failed", address, threadId), tapIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -266,7 +298,7 @@ object Notifier {
                 putExtra("address", target)
                 putExtra(
                     "thread_id",
-                    Telephony.Threads.getOrCreateThreadId(context, target)
+                    threadIdFor(context, target)
                 )
                 if (rawText.isNotBlank()) {
                     putExtra("decoy_fake_text", rawText)

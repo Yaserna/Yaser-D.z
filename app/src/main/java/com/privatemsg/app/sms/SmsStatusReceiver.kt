@@ -119,6 +119,10 @@ class SmsStatusReceiver : BroadcastReceiver() {
      * Counts status callbacks per outgoing message. A long SMS fires one callback per
      * radio part, so the row must only flip when all parts have reported; failures are
      * accumulated so a single bad part marks the whole message.
+     *
+     * A part whose callback never arrives (radio drop, phone rebooted) would otherwise
+     * leave its tally in the preference file forever, so each message also records when
+     * its first report landed and stale tallies are thrown away.
      */
     private class PartTracker(context: Context) {
         private val prefs =
@@ -126,18 +130,43 @@ class SmsStatusReceiver : BroadcastReceiver() {
 
         fun report(key: String, partTotal: Int, ok: Boolean): Pair<Boolean, Int> {
             val total = partTotal.coerceAtLeast(1)
-            val done = prefs.getInt(key + "_d", 0) + 1
-            val failed = prefs.getInt(key + "_f", 0) + if (ok) 0 else 1
-            val complete = done >= total
+            val now = System.currentTimeMillis()
+            val startedAt = prefs.getLong(key + "_t", 0L)
+            // No timestamp, or one older than the drop window: this is a fresh message,
+            // not another part of something abandoned long ago.
+            val fresh = startedAt == 0L || now - startedAt > STALE_MS
+            val done = if (fresh) 0 else prefs.getInt(key + "_d", 0)
+            val failed = if (fresh) 0 else prefs.getInt(key + "_f", 0)
+            val completed = done + 1 >= total
             val edit = prefs.edit()
-            if (complete) edit.remove(key + "_d").remove(key + "_f")
-            else edit.putInt(key + "_d", done).putInt(key + "_f", failed)
+            if (completed) edit.remove(key + "_d").remove(key + "_f").remove(key + "_t")
+            else edit.putLong(key + "_t", if (fresh) now else startedAt)
+                .putInt(key + "_d", done + 1)
+                .putInt(key + "_f", failed + if (ok) 0 else 1)
             edit.apply()
-            return complete to failed
+            if (prefs.all.size > PRUNE_AT) pruneStale(now)
+            return completed to (failed + if (ok) 0 else 1)
+        }
+
+        /** Drops tallies whose message stopped reporting. */
+        private fun pruneStale(now: Long) {
+            val stale = prefs.all.keys
+                .filter { it.endsWith("_t") && now - (prefs.all[it] as? Long ?: 0L) > STALE_MS }
+                .map { it.removeSuffix("_t") }
+            if (stale.isEmpty()) return
+            val edit = prefs.edit()
+            for (key in stale) edit.remove(key + "_d").remove(key + "_f").remove(key + "_t")
+            edit.apply()
         }
 
         companion object {
             private const val TRACK_PREFS = "part_track"
+
+            /** A message still waiting for a report after this long is considered gone. */
+            private const val STALE_MS = 6 * 60 * 60 * 1000L
+
+            /** How many tracked tallies are tolerated before a sweep. */
+            private const val PRUNE_AT = 200
         }
     }
 
@@ -151,7 +180,63 @@ class SmsStatusReceiver : BroadcastReceiver() {
         const val EXTRA_HIDDEN_ID = "hidden_id"
         const val EXTRA_PART_TOTAL = "part_total"
 
+        /**
+         * Identity-only Uri for hidden-row callbacks. Nothing is ever resolved against
+         * it; it only makes each message's pending intent unique (the intent is explicit,
+         * so no content provider is consulted).
+         */
+        private val HIDDEN_STATUS_URI: android.net.Uri =
+            android.net.Uri.parse("content://com.privatemsg.app.hidden/status")
+
         // One worker keeps the per-message part tallies strictly ordered.
         private val executor = Executors.newSingleThreadExecutor()
+
+        /**
+         * Callback for one row of the system store. [partTotal] must be the number of
+         * radio parts that row produced, otherwise the first part to report decides the
+         * fate of the whole message.
+         */
+        fun statusIntent(
+            context: android.content.Context,
+            action: String,
+            uri: android.net.Uri,
+            partTotal: Int
+        ): android.app.PendingIntent {
+            val intent = android.content.Intent(context, SmsStatusReceiver::class.java)
+                .setAction(action)
+                .setData(uri)
+                .putExtra(EXTRA_PART_TOTAL, partTotal)
+            // The data Uri makes the filter unique, so a colliding request code cannot
+            // hand one message's callback to another row.
+            val code = (uri.toString() + action).hashCode() and 0x7FFFFFFF
+            return android.app.PendingIntent.getBroadcast(
+                context, code, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        /** Callback for a row of the private hidden database (no provider Uri exists). */
+        fun hiddenStatusIntent(
+            context: android.content.Context,
+            action: String,
+            rowId: Long,
+            partTotal: Int
+        ): android.app.PendingIntent {
+            val intent = android.content.Intent(context, SmsStatusReceiver::class.java)
+                .setAction(action)
+                // A distinct data Uri per message: without it the row id alone as the
+                // request code can collide across the 32-bit boundary and, worse,
+                // FLAG_UPDATE_CURRENT would rewrite an older pending intent.
+                .setData(android.content.ContentUris.withAppendedId(HIDDEN_STATUS_URI, rowId))
+                .putExtra(EXTRA_HIDDEN_ID, rowId)
+                .putExtra(EXTRA_PART_TOTAL, partTotal)
+            val code = ("$action#$rowId").hashCode() and 0x7FFFFFFF
+            return android.app.PendingIntent.getBroadcast(
+                context, code, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+        }
     }
 }

@@ -10,6 +10,7 @@
     <string name="attach_contact">ارسال مخاطب</string>
     <string name="attach_location">ارسال موقعیت مکانی</string>
     <string name="location_unavailable">موقعیت مکانی در دسترس نیست</string>
+    <string name="crash_report_title">اپلیکیشن یک بار بسته شد؛ علت را برای ما بفرستید</string>
     <string name="location_permission_denied">برای فرستادن موقعیت، اجازهٔ دسترسی به مکان را بدهید</string>
     <string name="contact_card_format">%1$s\n%2$s</string>
     <string name="meta_name_date">%1$s · %2$s</string>
@@ -131,4 +132,13 @@
     <string name="pin">الصاق</string>
     <string name="mute">بی‌صدا</string>
     <string name="n_selected">%1$d مورد انتخاب شد</string>
+    <string name="star_add">ستاره‌دار کردن (محافظت از حذف)</string>
+    <string name="star_remove">حذف ستاره</string>
+    <string name="star_added">پیام ستاره‌دار شد و به برگزیده‌ها اضافه گردید</string>
+    <string name="star_removed">ستاره پیام برداشته شد</string>
+    <string name="starred_protected">این پیام ستاره‌دار است و محافظت شده است.</string>
+    <string name="deleting_messages">در حال حذف پیام‌ها…</string>
+    <string name="n_starred_protected">%1$d پیام ستاره‌دار محافظت شدند.</string>
+    <string name="n_starred_threads_protected">%1$d گفتگوی ستاره‌دار و محافظت‌شده حذف نشدند.</string>
+    <string name="channel_name">پیامک‌ها</string>
 </resources>

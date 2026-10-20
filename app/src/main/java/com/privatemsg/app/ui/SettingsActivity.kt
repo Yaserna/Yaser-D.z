@@ -100,13 +100,22 @@ class SettingsActivity : BaseActivity() {
 
     /** Builds one delivery-report toggle per SIM (or a single one when there's one SIM). */
     private fun buildDeliveryRows(secure: SecureStore) {
-        val sims = com.privatemsg.app.data.SimHelper(this).sims()
-        binding.deliveryContainer.removeAllViews()
-        if (sims.size <= 1) {
-            val subId = sims.firstOrNull()?.subId ?: -1
-            addDeliveryRow(getString(R.string.delivery_report), subId, secure)
-        } else {
-            for (s in sims) addDeliveryRow(getString(R.string.delivery_report_sim, s.slot), s.subId, secure)
+        // Asking the telephony service for the SIM list is a binder call, and doing it in
+        // onCreate would hold up the first frame of this screen. The rows land a moment
+        // later; everything below runs on the UI thread again because it builds views.
+        val app = applicationContext
+        runOffUi {
+            val sims = com.privatemsg.app.data.SimHelper(app).sims()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                binding.deliveryContainer.removeAllViews()
+                if (sims.size <= 1) {
+                    val subId = sims.firstOrNull()?.subId ?: -1
+                    addDeliveryRow(getString(R.string.delivery_report), subId, secure)
+                } else {
+                    for (s in sims) addDeliveryRow(getString(R.string.delivery_report_sim, s.slot), s.subId, secure)
+                }
+            }
         }
     }
 
@@ -150,10 +159,10 @@ class SettingsActivity : BaseActivity() {
     }
 
     private fun pickTheme(secure: SecureStore) {
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.theme_label)
-            .setSingleChoiceItems(themeLabels, secure.themeMode) { dialog, which ->
-                dialog.dismiss()
+            .setSingleChoiceItems(themeLabels, secure.themeMode) { d, which ->
+                d.dismiss()
                 if (which != secure.themeMode) {
                     secure.themeMode = which
                     // Rebuild so the new theme applies immediately across the app.
@@ -161,6 +170,7 @@ class SettingsActivity : BaseActivity() {
                 }
             }
             .show()
+        trackDialog(dialog)
     }
 
     private fun iconPreviewFor(alias: String): Int =
@@ -203,6 +213,7 @@ class SettingsActivity : BaseActivity() {
             grid.addView(iv)
         }
         dialog.show()
+        trackDialog(dialog)
     }
 
     private fun startSafely(intent: android.content.Intent) {
@@ -273,6 +284,7 @@ class SettingsActivity : BaseActivity() {
             grid.addView(v)
         }
         dialog.show()
+        trackDialog(dialog)
     }
 
     private fun nearestIndex(value: Float): Int {
@@ -286,14 +298,15 @@ class SettingsActivity : BaseActivity() {
     }
 
     private fun pickScale(titleRes: Int, current: Float, onPick: (Float) -> Unit) {
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(titleRes)
-            .setSingleChoiceItems(scaleLabels, nearestIndex(current)) { dialog, which ->
+            .setSingleChoiceItems(scaleLabels, nearestIndex(current)) { d, which ->
                 onPick(scaleValues[which])
-                dialog.dismiss()
+                d.dismiss()
                 // Rebuild so the new size applies immediately across the app.
                 recreate()
             }
             .show()
+        trackDialog(dialog)
     }
 }

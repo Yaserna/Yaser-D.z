@@ -8,7 +8,7 @@ import java.security.SecureRandom
 class SecureStore(context: Context) {
 
     private val appContext = context.applicationContext
-    private val prefs = context.getSharedPreferences("secure_prefs", Context.MODE_PRIVATE)
+    private val prefs = appContext.getSharedPreferences("secure_prefs", Context.MODE_PRIVATE)
 
     /**
      * Address-derived keys used to hold the normalized number in their name, so even with
@@ -333,13 +333,17 @@ class SecureStore(context: Context) {
     fun setDeliveryReportForSub(subId: Int, enabled: Boolean) =
         prefs.edit().putBoolean(KEY_DELIVERY + "_" + subId, enabled).apply()
 
+    // These three feed every screen's configuration (attachBaseContext). A value the
+    // pickers can never produce - a corrupted preference file, a future build with a
+    // different option table - would otherwise be re-applied on each recreate and leave
+    // the app unreadable with no in-app way to fix it, so each getter clamps.
     var fontScale: Float
-        get() = prefs.getFloat(KEY_FONT_SCALE, 1f)
-        set(v) = prefs.edit().putFloat(KEY_FONT_SCALE, v).apply()
+        get() = prefs.getFloat(KEY_FONT_SCALE, 1f).coerceIn(0.5f, 2f)
+        set(v) = prefs.edit().putFloat(KEY_FONT_SCALE, v.coerceIn(0.5f, 2f)).apply()
 
     var uiScale: Float
-        get() = prefs.getFloat(KEY_UI_SCALE, 1f)
-        set(v) = prefs.edit().putFloat(KEY_UI_SCALE, v).apply()
+        get() = prefs.getFloat(KEY_UI_SCALE, 1f).coerceIn(0.5f, 2f)
+        set(v) = prefs.edit().putFloat(KEY_UI_SCALE, v.coerceIn(0.5f, 2f)).apply()
 
     var fingerprintEnabled: Boolean
         get() = prefs.getBoolean(KEY_FINGERPRINT, false)
@@ -349,9 +353,10 @@ class SecureStore(context: Context) {
         get() = prefs.getBoolean(KEY_DECOY_SOUND, false)
         set(v) = prefs.edit().putBoolean(KEY_DECOY_SOUND, v).apply()
 
+    /** 0 = system, 1 = light, 2 = dark; anything else falls back to dark. */
     var themeMode: Int
-        get() = prefs.getInt(KEY_THEME, THEME_DARK)
-        set(v) = prefs.edit().putInt(KEY_THEME, v).apply()
+        get() = prefs.getInt(KEY_THEME, THEME_DARK).coerceIn(THEME_SYSTEM, THEME_DARK)
+        set(v) = prefs.edit().putInt(KEY_THEME, v.coerceIn(THEME_SYSTEM, THEME_DARK)).apply()
 
     var appIcon: String
         get() = prefs.getString(KEY_APP_ICON, ICON_DEFAULT) ?: ICON_DEFAULT

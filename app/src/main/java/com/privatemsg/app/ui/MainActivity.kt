@@ -39,6 +39,11 @@ class MainActivity : BaseActivity() {
     private var archivedConvos: List<Conversation> = emptyList()
     private var searchIndex: List<Pair<Conversation, String>> = emptyList()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    /** True once a conversation load has succeeded; gates the role re-offer below. */
+    @Volatile private var everLoaded = false
+    private var reaskRemaining = 2
+    private val refreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var refreshAgain = false
 
     /** Queues [task] on the worker thread; false once the screen has been torn down. */
     private fun runIo(task: () -> Unit): Boolean {
@@ -50,6 +55,7 @@ class MainActivity : BaseActivity() {
         }
     }
     private val fabHandler = Handler(Looper.getMainLooper())
+    private val mainReloadHandler = Handler(Looper.getMainLooper())
     private var longFired = false
     private val hiddenRunnable = Runnable {
         longFired = true
@@ -66,9 +72,15 @@ class MainActivity : BaseActivity() {
         BaseActivity.hiddenLocked = false
         startActivity(Intent(this, HiddenActivity::class.java))
     }
+    /** Coalesces provider notifications: one burst of row changes is one reload. */
+    private val reloadRunnable = Runnable {
+        if (!adapter.selectionMode) refresh()
+    }
     private val smsObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) {
-            if (!adapter.selectionMode) refresh()
+            if (adapter.selectionMode) return
+            mainReloadHandler.removeCallbacks(reloadRunnable)
+            mainReloadHandler.postDelayed(reloadRunnable, 250L)
         }
     }
 
@@ -184,6 +196,24 @@ class MainActivity : BaseActivity() {
 
         requestPermissionsIfNeeded()
 
+        // If the app closed on its own last time, say so now and hand over the reason:
+        // the trace is what identifies the failing line, and it is lost once the process
+        // dies. Reading it consumes the stored copy, so it appears exactly once.
+        com.privatemsg.app.App.takeLastCrash(this)?.let { trace ->
+            val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.crash_report_title)
+                .setMessage(trace)
+                .setPositiveButton(R.string.copy) { _, _ ->
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", trace))
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .create()
+            dialog.show()
+            trackDialog(dialog)
+        }
+
         // Back: leave selection mode, then clear an active search, then close the app.
         // (The same order the old onBackPressed override had, on the modern API.)
         onBackPressedDispatcher.addCallback(
@@ -206,6 +236,7 @@ class MainActivity : BaseActivity() {
     override fun onDestroy() {
         super.onDestroy()
         contentResolver.unregisterContentObserver(smsObserver)
+        mainReloadHandler.removeCallbacks(reloadRunnable)
         ioExecutor.shutdown()
         cancelLongPresses()
     }
@@ -255,7 +286,16 @@ class MainActivity : BaseActivity() {
         val i = Intent(this, ConversationActivity::class.java)
         if (number.isNotEmpty()) {
             i.putExtra("address", number)
-            i.putExtra("thread_id", Telephony.Threads.getOrCreateThreadId(this, number))
+            // An SMS: link from another app can carry anything as its "number"; the
+            // thread lookup throws instead of guessing, and -1 lets the compose screen
+            // resolve it itself once it is on a worker thread.
+            val thread = try {
+                Telephony.Threads.getOrCreateThreadId(this, number)
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "no thread for ${number.take(4)}…", e)
+                -1L
+            }
+            i.putExtra("thread_id", thread)
         }
         if (body.isNotEmpty()) i.putExtra("prefill", body)
         startActivity(i)
@@ -312,7 +352,8 @@ class MainActivity : BaseActivity() {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (protectedCount > 0) {
                     android.widget.Toast.makeText(
-                        this, "$protectedCount گفتگوی ستاره‌دار و محافظت‌شده حذف نشدند.",
+                        this,
+                        getString(R.string.n_starred_threads_protected, protectedCount),
                         android.widget.Toast.LENGTH_LONG
                     ).show()
                 }
@@ -491,23 +532,52 @@ class MainActivity : BaseActivity() {
     private fun refresh() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_SMS)
             != PackageManager.PERMISSION_GRANTED
-        ) return
-        runIo {
+        ) {
+            // Without the default-SMS role Android refuses READ_SMS, so a plain permission
+            // request can never succeed here. A dead blank screen is worse than being asked
+            // again: re-open the role offer, but only while nothing has ever loaded and only
+            // twice, so a refusal does not turn into a nagging loop.
+            if (!everLoaded && reaskRemaining > 0) {
+                reaskRemaining--
+                askedDefault = false
+            }
+            return
+        }
+        // One pass at a time: a delete or an incoming message fires the observer several
+        // times in a row, and each extra pass is another full scan of the message store
+        // queued on the single worker - which is what kept the list unresponsive for
+        // seconds after one action.
+        if (!refreshing.compareAndSet(false, true)) {
+            refreshAgain = true
+            return
+        }
+        if (!runIo {
             val all = try {
                 repo.getConversations()
             } catch (e: Exception) {
                 android.util.Log.e("MainActivity", "conversation list load failed", e)
+                refreshing.set(false)
                 return@runIo
             }
+            everLoaded = true
             // 1) The main list (archived chats excluded) shows immediately.
             val main = all.filter { !secure.isArchived(it.address) }
                 .sortedByDescending { secure.isPinned(it.address) }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                allConvos = main
-                if (binding.searchInput.text.isNullOrEmpty()) adapter.submit(main)
+            // 2) Resolve the contact names on THIS thread, before the list is handed to
+            //    the adapter. Every row bind asks for a name, and an unwarmed cache makes
+            //    the UI thread query the contacts provider once per visible row - the
+            //    screen then looks empty for a beat even though the data was already read.
+            val index = main.map {
+                it to (contacts.displayFor(it.address) + " " + it.snippet).lowercase()
             }
-            // 2) Archived chats are processed AFTER the main list is on screen, so
+            runOnUiThread {
+                if (isFinishing || isDestroyed) { refreshing.set(false); return@runOnUiThread }
+                allConvos = main
+                searchIndex = index
+                if (binding.searchInput.text.isNullOrEmpty()) adapter.submit(main)
+                else applyFilter(binding.searchInput.text?.toString().orEmpty())
+            }
+            // 3) Archived chats are processed AFTER the main list is on screen, so
             //    startup stays light. They only feed the unread badge + archive view.
             val archived = all.filter { secure.isArchived(it.address) }
                 .sortedByDescending { it.date }
@@ -516,17 +586,12 @@ class MainActivity : BaseActivity() {
                 archivedConvos = archived
                 updateArchiveBadge()
             }
-            // 3) Resolve contact names afterwards (for search), without blocking the list.
-            val index = main.map {
-                it to (contacts.displayFor(it.address) + " " + it.snippet).lowercase()
+            refreshing.set(false)
+            if (refreshAgain) {
+                refreshAgain = false
+                refresh()
             }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                searchIndex = index
-                val q = binding.searchInput.text?.toString().orEmpty()
-                if (q.isNotEmpty()) applyFilter(q)
-            }
-        }
+        }) refreshing.set(false)
     }
 
     /** The archive button is always shown; its dot appears only for unread archived chats. */

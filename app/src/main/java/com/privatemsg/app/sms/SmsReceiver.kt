@@ -25,6 +25,9 @@ class SmsReceiver : BroadcastReceiver() {
 
         val pendingResult = goAsync()
 
+        // The worker outlives onReceive, and a receiver context is invalid after that
+        // first call returns - everything below runs on the application context.
+        val app = context.applicationContext
         asyncExecutor.execute {
             try {
                 val rawAddress = messages[0].displayOriginatingAddress ?: ""
@@ -35,8 +38,12 @@ class SmsReceiver : BroadcastReceiver() {
                 val subId = intent.getIntExtra("subscription", -1)
                 val serviceCenter = messages[0].serviceCenterAddress ?: ""
 
-                val secure = SecureStore(context)
+                val secure = SecureStore(app)
                 val isHidden = secure.isHidden(rawAddress) || (normAddress.isNotBlank() && secure.isHidden(normAddress))
+                // A number can be muted under either spelling; checking only the raw one
+                // let a normalized mute alert anyway.
+                val isMuted = secure.isMuted(rawAddress) ||
+                    (normAddress.isNotBlank() && secure.isMuted(normAddress))
 
                 if (isHidden) {
                     val isEncrypted = NumericCipher.isNumericEncrypted(cleanBody)
@@ -45,66 +52,66 @@ class SmsReceiver : BroadcastReceiver() {
                     val honeypotActive = secure.isHoneypotEnabled(rawAddress) || (normAddress.isNotBlank() && secure.isHoneypotEnabled(normAddress))
 
                     if (honeypotActive && !isFromSafe) {
-                        val repo = SmsRepository(context)
+                        val repo = SmsRepository(app)
                         val msgId = repo.insertInboxMessage(rawAddress, body, date, subId, serviceCenter)
-                        val msgThreadId = Telephony.Threads.getOrCreateThreadId(context, rawAddress)
+                        val msgThreadId = threadIdFor(app, rawAddress)
                         val active = ConversationActivity.activeNormalizedAddress
                         val activeThread = ConversationActivity.activeThreadId
                         val inChat = (activeThread > 0 && activeThread == msgThreadId) ||
                                      (active != null && (active == normAddress || active == SecureStore.normalize(rawAddress)))
 
-                        context.sendBroadcast(
-                            Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(context.packageName)
+                        app.sendBroadcast(
+                            Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(app.packageName)
                         )
 
                         if (inChat) {
-                            Notifier.vibrateTiny(context)
-                            repo.markThreadRead(msgThreadId)
-                        } else if (!secure.isMuted(rawAddress)) {
-                            Notifier.showIncoming(context, rawAddress, body, msgId, subId)
-                            Notifier.vibrateTiny(context)
+                            Notifier.vibrateTiny(app)
+                            if (msgThreadId > 0) repo.markThreadRead(msgThreadId)
+                        } else if (!isMuted) {
+                            Notifier.showIncoming(app, rawAddress, body, msgId, subId)
+                            Notifier.vibrateTiny(app)
                         }
                         return@execute
                     }
 
-                    val hiddenDb = HiddenDbHelper.getInstance(context)
+                    val hiddenDb = HiddenDbHelper.getInstance(app)
                     hiddenDb.insert(rawAddress, body, date, 1, subId)
 
                     val active = HiddenConversationActivity.activeNormalizedAddress
                     val inChat = active != null && (active == normAddress || active == SecureStore.normalize(rawAddress))
 
-                    // همیشه برودکست رفرش زنده به صفحه باز مخفی ارسال می‌شود
-                    context.sendBroadcast(
-                        Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(context.packageName)
+                    // A live refresh always goes to the open hidden screen.
+                    app.sendBroadcast(
+                        Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(app.packageName)
                     )
 
                     if (inChat) {
-                        Notifier.vibrateTiny(context)
+                        Notifier.vibrateTiny(app)
                         hiddenDb.markRead(rawAddress)
                         hiddenDb.markRead(normAddress)
-                    } else if (!secure.isMuted(rawAddress)) {
-                        Notifier.showDecoy(context, secure, rawAddress)
+                    } else if (!isMuted) {
+                        Notifier.showDecoy(app, secure, rawAddress)
                     }
                 } else {
-                    val repo = SmsRepository(context)
+                    val repo = SmsRepository(app)
                     val msgId = repo.insertInboxMessage(rawAddress, body, date, subId, serviceCenter)
-                    val msgThreadId = Telephony.Threads.getOrCreateThreadId(context, rawAddress)
+                    val msgThreadId = threadIdFor(app, rawAddress)
                     val active = ConversationActivity.activeNormalizedAddress
                     val activeThread = ConversationActivity.activeThreadId
                     val inChat = (activeThread > 0 && activeThread == msgThreadId) ||
                                  (active != null && (active == normAddress || active == SecureStore.normalize(rawAddress)))
 
-                    // ارسال برودکست رفرش آنی به صفحه چت باز عمومی
-                    context.sendBroadcast(
-                        Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(context.packageName)
+                    // Push the live refresh to the open public chat.
+                    app.sendBroadcast(
+                        Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(app.packageName)
                     )
 
                     if (inChat) {
-                        Notifier.vibrateTiny(context)
-                        repo.markThreadRead(msgThreadId)
-                    } else if (!secure.isMuted(rawAddress)) {
-                        Notifier.showIncoming(context, rawAddress, body, msgId, subId)
-                        Notifier.vibrateTiny(context)
+                        Notifier.vibrateTiny(app)
+                        if (msgThreadId > 0) repo.markThreadRead(msgThreadId)
+                    } else if (!isMuted) {
+                        Notifier.showIncoming(app, rawAddress, body, msgId, subId)
+                        Notifier.vibrateTiny(app)
                     }
                 }
             } catch (e: Exception) {
@@ -120,5 +127,13 @@ class SmsReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "SmsReceiver"
         private val asyncExecutor = Executors.newSingleThreadExecutor()
+    }
+
+    /** -1 when the sender has no resolvable thread; the callers all treat that as "no chat". */
+    private fun threadIdFor(context: Context, address: String): Long = try {
+        Telephony.Threads.getOrCreateThreadId(context, address)
+    } catch (e: Exception) {
+        android.util.Log.e(TAG, "no thread for this sender", e)
+        -1L
     }
 }

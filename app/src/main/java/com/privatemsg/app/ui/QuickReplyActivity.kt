@@ -1,21 +1,22 @@
 package com.privatemsg.app.ui
 
-import android.os.Build
 import android.os.Bundle
-import android.telephony.SmsManager
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.Toast
-import androidx.core.app.NotificationManagerCompat
 import com.privatemsg.app.R
 import com.privatemsg.app.data.ContactsHelper
-import com.privatemsg.app.data.Message
+import com.privatemsg.app.data.SecureStore
 import com.privatemsg.app.data.SimHelper
 import com.privatemsg.app.data.SmsRepository
 import com.privatemsg.app.databinding.ActivityQuickReplyBinding
+import com.privatemsg.app.sms.SmsSender
+import com.privatemsg.app.sms.SmsStatusReceiver
+import java.util.concurrent.Executors
 
 /**
  * A small floating window opened from the notification's Reply button: shows the
@@ -28,6 +29,12 @@ class QuickReplyActivity : BaseActivity() {
     private var threadId: Long = -1
     private var notifId: Int = 0
     private var subId: Int = -1
+
+    // Reading the SMS store and handing a message to the radio are both slow calls, and
+    // this window opens straight on top of a notification tap: they go to a worker and
+    // only the finished result is posted back to the UI.
+    private val worker = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,21 +52,29 @@ class QuickReplyActivity : BaseActivity() {
         notifId = intent.getIntExtra("notif_id", 0)
         subId = intent.getIntExtra("sub_id", -1)
 
-        binding.title.text = ContactsHelper(this).displayFor(address)
-        showLastMessages()
+        val contacts = ContactsHelper(this)
+        val repo = SmsRepository(this)
+        val wantedThread = threadId
+        worker.execute {
+            val title = runCatching { contacts.displayFor(address) }.getOrNull()
+            val last = if (wantedThread > 0)
+                runCatching { repo.getMessages(wantedThread).takeLast(5) }.getOrNull()
+            else null
+            main.post { if (!isDestroyed) renderLast(title, last) }
+        }
 
         binding.sendButton.setOnClickListener { send() }
         binding.input.requestFocus()
     }
 
-    /** Renders the last 5 messages as small chat bubbles (conversation colors). */
-    private fun showLastMessages() {
-        if (threadId <= 0) return
-        val secure = com.privatemsg.app.data.SecureStore(this)
+    private fun renderLast(title: String?, messages: List<com.privatemsg.app.data.Message>?) {
+        if (!title.isNullOrEmpty()) binding.title.text = title
+        if (messages.isNullOrEmpty()) return
+        val secure = SecureStore(this)
         val sentColor = secure.sentBubbleColor
         val recvColor = secure.receivedBubbleColor
         val d = resources.displayMetrics.density
-        for (m in SmsRepository(this).getMessages(threadId).takeLast(5)) {
+        for (m in messages) {
             val sent = m.type != 1
             val color = if (sent) sentColor else recvColor
             val bubble = android.widget.TextView(this).apply {
@@ -96,28 +111,47 @@ class QuickReplyActivity : BaseActivity() {
     private fun send() {
         val body = binding.input.text.toString().trim()
         if (body.isEmpty() || address.isEmpty()) return
-        try {
-            val sub = if (subId >= 0) subId else SimHelper(this).defaultSubId()
-            SmsRepository(this).storeSentMessage(address, body, sub)
-            val sm = smsManager(sub)
-            val parts = sm.divideMessage(body)
-            if (parts.size > 1) sm.sendMultipartTextMessage(address, null, parts, null, null)
-            else sm.sendTextMessage(address, null, body, null, null)
-            Toast.makeText(this, R.string.reply_sent, Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, R.string.reply_failed, Toast.LENGTH_SHORT).show()
+        binding.sendButton.isEnabled = false // one tap = one message, even on a slow radio
+        val app = applicationContext
+        val rowThread = threadId
+        worker.execute {
+            val secure = SecureStore(app)
+            val sub = if (subId >= 0) subId else SimHelper(app).defaultSubId()
+            val repo = SmsRepository(app)
+            val uri = repo.storeSentMessage(address, body, sub)
+            val parts = SmsSender.split(app, sub, body)
+            val sent = SmsSender.send(
+                app, sub, address, parts,
+                uri?.let {
+                    SmsStatusReceiver.statusIntent(app, SmsStatusReceiver.ACTION_SENT, it, parts.size)
+                },
+                uri?.takeIf { secure.deliveryReportForSub(sub) }?.let {
+                    SmsStatusReceiver.statusIntent(app, SmsStatusReceiver.ACTION_DELIVERED, it, parts.size)
+                }
+            )
+            if (!sent && uri != null) {
+                // The radio refused it: keep the text as a queued outbox row instead of a
+                // row that shows a tick for a message that never left the phone.
+                repo.queueFailedSend(uri, address, body, rowThread, sub)
+            }
+            main.post {
+                if (isDestroyed) return@post
+                if (!sent) {
+                    binding.sendButton.isEnabled = true
+                    Toast.makeText(this, R.string.reply_failed, Toast.LENGTH_SHORT).show()
+                    return@post
+                }
+                androidx.core.app.NotificationManagerCompat.from(this).cancel(notifId)
+                Toast.makeText(this, R.string.reply_sent, Toast.LENGTH_SHORT).show()
+                finish()
+            }
         }
-        NotificationManagerCompat.from(this).cancel(notifId)
-        finish()
     }
 
-    private fun smsManager(subId: Int): SmsManager {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val base = getSystemService(SmsManager::class.java)
-            if (subId >= 0) base.createForSubscriptionId(subId) else base
-        } else {
-            @Suppress("DEPRECATION")
-            if (subId >= 0) SmsManager.getSmsManagerForSubscriptionId(subId) else SmsManager.getDefault()
-        }
+    override fun onDestroy() {
+        // Let a reply that is already on its way to the radio finish; only new work is
+        // refused. The UI callbacks check isDestroyed before touching views.
+        worker.shutdown()
+        super.onDestroy()
     }
 }

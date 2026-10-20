@@ -1,13 +1,10 @@
 package com.privatemsg.app.sms
 
-import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.telephony.SmsManager
 import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
@@ -63,17 +60,29 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 context.sendBroadcast(
                     Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(context.packageName)
                 )
-                val sent = try {
-                    sendViaSms(context, address, reply, subId, uri)
-                    true
-                } catch (e: Exception) {
-                    android.util.Log.e("NotifAction", "canned reply send failed", e)
-                    false
-                }
-                toast(
-                    context,
-                    if (sent) R.string.reply_sent else R.string.reply_failed
+                val parts = SmsSender.split(context, subId, reply)
+                val sent = SmsSender.send(
+                    context, subId, address, parts,
+                    uri?.let {
+                        SmsStatusReceiver.statusIntent(context, SmsStatusReceiver.ACTION_SENT, it, parts.size)
+                    },
+                    uri?.takeIf { SecureStore(context).deliveryReportForSub(subId) }?.let {
+                        SmsStatusReceiver.statusIntent(
+                            context, SmsStatusReceiver.ACTION_DELIVERED, it, parts.size
+                        )
+                    }
                 )
+                if (!sent && uri != null) {
+                    // The radio refused it: keep the text as a queued outbox row rather
+                    // than leaving a message on screen that carries a false sent tick.
+                    val rowThread = if (threadId > 0) threadId else try {
+                        android.provider.Telephony.Threads.getOrCreateThreadId(context, address)
+                    } catch (_: Exception) {
+                        0L
+                    }
+                    repo.queueFailedSend(uri, address, reply, rowThread, subId)
+                }
+                toast(context, if (sent) R.string.reply_sent else R.string.reply_failed)
             }
 
             ACTION_MARK_READ -> if (threadId >= 0) {
@@ -91,57 +100,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
             }
         }
         NotificationManagerCompat.from(context).cancel(notifId)
-    }
-
-    private fun sendViaSms(
-        context: Context,
-        address: String,
-        body: String,
-        subId: Int,
-        rowUri: android.net.Uri?
-    ) {
-        val sm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val base = context.getSystemService(SmsManager::class.java)
-            if (subId >= 0) base.createForSubscriptionId(subId) else base
-        } else {
-            @Suppress("DEPRECATION")
-            if (subId >= 0) SmsManager.getSmsManagerForSubscriptionId(subId) else SmsManager.getDefault()
-        }
-        // Same status callbacks the chat screen registers, so a failed reply is marked
-        // here too; without them the row would keep an optimistic tick forever.
-        val sentPi = rowUri?.let {
-            statusIntent(context, SmsStatusReceiver.ACTION_SENT, it, 1)
-        }
-        val deliveredPi = if (rowUri != null && SecureStore(context).deliveryReportForSub(subId)) {
-            statusIntent(context, SmsStatusReceiver.ACTION_DELIVERED, rowUri, 1)
-        } else {
-            null
-        }
-        val parts = sm.divideMessage(body)
-        if (parts.size > 1) {
-            // The multipart API wants one callback per part, in ArrayList form.
-            val sentIntents = sentPi?.let { pi -> ArrayList(parts.map { pi }) }
-            val deliveredIntents = deliveredPi?.let { pi -> ArrayList(parts.map { pi }) }
-            sm.sendMultipartTextMessage(address, null, ArrayList(parts), sentIntents, deliveredIntents)
-        } else {
-            sm.sendTextMessage(address, null, body, sentPi, deliveredPi)
-        }
-    }
-
-    private fun statusIntent(
-        context: Context,
-        action: String,
-        uri: android.net.Uri,
-        partTotal: Int
-    ): PendingIntent {
-        val intent = Intent(context, SmsStatusReceiver::class.java)
-            .setAction(action)
-            .setData(uri)
-            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
-        return PendingIntent.getBroadcast(
-            context, uri.toString().hashCode() and 0x7FFFFFFF, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
     }
 
     private fun toast(context: Context, textRes: Int) {

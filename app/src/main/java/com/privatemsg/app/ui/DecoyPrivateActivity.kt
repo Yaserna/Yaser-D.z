@@ -2,6 +2,7 @@ package com.privatemsg.app.ui
 
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.privatemsg.app.R
 import com.privatemsg.app.data.ContactsHelper
@@ -18,6 +19,9 @@ class DecoyPrivateActivity : BaseActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // This screen pretends to hold private messages, so it must refuse screenshots
+        // and the recent-apps preview exactly like every other screen that does.
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 

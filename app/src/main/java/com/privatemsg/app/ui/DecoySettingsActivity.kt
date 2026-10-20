@@ -56,8 +56,17 @@ class DecoySettingsActivity : BaseActivity() {
             binding.decoyText.setText(secure.decoyText)
             pickedTarget = secure.decoyTarget
         } else {
-            supportActionBar?.title =
-                getString(R.string.decoy_title_for, ContactsHelper(this).displayFor(pn))
+            supportActionBar?.title = getString(R.string.decoy_title_for, pn)
+            // Same reasoning as updateTargetLabel: the contact name is a provider query,
+            // so the number is shown now and the name follows from the worker.
+            val app = applicationContext
+            runOffUi {
+                val name = ContactsHelper(app).displayFor(pn)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || name == pn) return@runOnUiThread
+                    supportActionBar?.title = getString(R.string.decoy_title_for, name)
+                }
+            }
             binding.decoyName.setText(secure.decoyNameFor(pn))
             binding.decoyText.setText(secure.decoyTextFor(pn))
             pickedTarget = secure.decoyTargetFor(pn)
@@ -87,8 +96,22 @@ class DecoySettingsActivity : BaseActivity() {
     }
 
     private fun updateTargetLabel() {
-        binding.decoyTargetValue.text =
-            if (pickedTarget.isBlank()) getString(R.string.not_set)
-            else ContactsHelper(this).displayFor(pickedTarget)
+        val target = pickedTarget
+        if (target.isBlank()) {
+            binding.decoyTargetValue.text = getString(R.string.not_set)
+            return
+        }
+        // The label shows the saved contact name for the picked conversation, and that
+        // name is a contacts-provider query. Show the number at once and let the name
+        // replace it from the worker a moment later.
+        binding.decoyTargetValue.text = target
+        val app = applicationContext
+        runOffUi {
+            val display = ContactsHelper(app).displayFor(target)
+            runOnUiThread {
+                if (isFinishing || isDestroyed || pickedTarget != target) return@runOnUiThread
+                binding.decoyTargetValue.text = display
+            }
+        }
     }
 }

@@ -55,8 +55,10 @@ class StarredDbHelper private constructor(context: Context) :
 
     private fun loadCache() {
         try {
-            val db = writableDatabase
-            onCreate(db)
+            // A read connection is enough here, and it is the cheaper one to open on the
+            // first call: SQLiteOpenHelper already runs onCreate/onUpgrade for us, so an
+            // extra explicit DDL pass would only lock the database a second time.
+            val db = readableDatabase
             db.query(TABLE, arrayOf("message_id", "is_hidden"), null, null, null, null, null)?.use { c ->
                 while (c.moveToNext()) {
                     val msgId = c.getLong(0)

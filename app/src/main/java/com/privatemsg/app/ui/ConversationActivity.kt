@@ -10,10 +10,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
-import android.os.Build
 import android.os.Bundle
 import android.provider.ContactsContract
-import android.telephony.SmsManager
 import androidx.core.content.ContextCompat
 import android.text.format.DateUtils
 import android.view.View
@@ -24,17 +22,20 @@ import androidx.core.widget.addTextChangedListener
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.privatemsg.app.R
+import com.privatemsg.app.data.ContactsHelper
 import com.privatemsg.app.data.Message
 import com.privatemsg.app.data.SecureStore
 import com.privatemsg.app.data.SimHelper
 import com.privatemsg.app.data.SmsRepository
 import com.privatemsg.app.databinding.ActivityConversationBinding
+import com.privatemsg.app.sms.SmsSender
 import com.privatemsg.app.sms.SmsStatusReceiver
 
 class ConversationActivity : BaseActivity() {
 
     private lateinit var binding: ActivityConversationBinding
     private lateinit var repo: SmsRepository
+    private lateinit var contacts: ContactsHelper
     private lateinit var adapter: MessageAdapter
     private var recentsAdapter: ConversationAdapter? = null
     private var threadId: Long = -1
@@ -100,9 +101,10 @@ class ConversationActivity : BaseActivity() {
         if (to.isEmpty()) return
         address = to
         pickedNumber = to
-        threadId = android.provider.Telephony.Threads.getOrCreateThreadId(this, to)
         binding.recipientRow.visibility = View.GONE
-        binding.titleName.text = com.privatemsg.app.data.ContactsHelper(this).displayFor(to)
+        // The number is shown at once; the contact's name replaces it when the (slow)
+        // contacts query answers, so the screen switch never waits on the provider.
+        binding.titleName.text = to
         binding.titleNumber.text = to
         // Swap the "recent suggestions" list for the real message list.
         binding.recycler.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
@@ -111,12 +113,43 @@ class ConversationActivity : BaseActivity() {
         ownActiveNormalizedAddress = SecureStore.normalize(to)
         activeNormalizedAddress = ownActiveNormalizedAddress
         com.privatemsg.app.sms.Notifier.cancelIncoming(this, to)
-        SecureStore(this).recordConversationOpened(to)
-        // If nothing is typed yet, bring back this conversation's saved draft.
-        if (binding.input.text.isNullOrEmpty()) binding.input.setText(SecureStore(this).getDraft(to))
-        markRead(threadId)
-        loadMessages()
-        binding.input.requestFocus()
+        val app = applicationContext
+        runIo {
+            val secure = SecureStore(app)
+            secure.recordConversationOpened(to)
+            val name = runCatching { contacts.displayFor(to) }.getOrNull()
+            val draft = runCatching { secure.getDraft(to) }.getOrNull()
+            val thread = threadIdFor(app, to)
+            runOnUiThread {
+                if (isFinishing || address != to) return@runOnUiThread
+                if (!name.isNullOrEmpty()) binding.titleName.text = name
+                if (thread > 0) {
+                    threadId = thread
+                    claimActive(thread, ownActiveNormalizedAddress)
+                }
+                // Only restore a draft while nothing has been typed yet.
+                if (binding.input.text.isNullOrEmpty() && !draft.isNullOrEmpty()) {
+                    binding.input.setText(draft)
+                    binding.input.setSelection(binding.input.text?.length ?: 0)
+                }
+                markRead(threadId)
+                loadMessages()
+                binding.input.requestFocus()
+            }
+        }
+    }
+
+    /**
+     * The system thread for a number. This is a provider call that can throw (an
+     * alphanumeric sender, a number too short to resolve), and it must never run on
+     * the UI thread — a failure leaves 0, which every caller already treats as
+     * "no existing thread".
+     */
+    private fun threadIdFor(context: Context, number: String): Long = try {
+        android.provider.Telephony.Threads.getOrCreateThreadId(context, number)
+    } catch (e: Exception) {
+        android.util.Log.e("ConversationActivity", "no thread for this number", e)
+        0L
     }
 
     /** Loads recent conversations to suggest as recipients while composing. */
@@ -202,6 +235,7 @@ class ConversationActivity : BaseActivity() {
         binding.titleBox.setOnClickListener { openContact() }
 
         repo = SmsRepository(this)
+        contacts = ContactsHelper(this)
         threadId = intent.getLongExtra("thread_id", -1)
         address = intent.getStringExtra("address") ?: ""
 
@@ -210,10 +244,29 @@ class ConversationActivity : BaseActivity() {
             binding.titleName.text = getString(R.string.new_message)
             setupRecipientAutocomplete()
         } else {
-            binding.titleName.text =
-                com.privatemsg.app.data.ContactsHelper(this).displayFor(address)
+            // The contacts provider is not instant; the number holds the title until the
+            // saved name arrives on the UI thread.
+            binding.titleName.text = address
             binding.titleNumber.text = address
             binding.recipientRow.visibility = View.GONE
+            val forAddress = address
+            val app = applicationContext
+            runIo {
+                val name = runCatching { contacts.displayFor(forAddress) }.getOrNull()
+                // Opened without a usable thread (an intent from another app): resolve it
+                // here, otherwise the chat would look empty even though messages exist.
+                val thread = if (threadId > 0) threadId else threadIdFor(app, forAddress)
+                runOnUiThread {
+                    if (isFinishing || address != forAddress) return@runOnUiThread
+                    if (!name.isNullOrEmpty()) binding.titleName.text = name
+                    if (thread > 0 && threadId <= 0) {
+                        threadId = thread
+                        claimActive(thread, SecureStore.normalize(forAddress))
+                        markRead(thread)
+                        loadMessages()
+                    }
+                }
+            }
         }
 
         binding.pickContactButton.setOnClickListener {
@@ -240,7 +293,7 @@ class ConversationActivity : BaseActivity() {
             // Compose mode: the list area shows recent conversations as quick
             // recipient suggestions (people I recently messaged / opened).
             recentsAdapter = ConversationAdapter(
-                contacts = com.privatemsg.app.data.ContactsHelper(this),
+                contacts = contacts,
                 onClick = { conv -> enterConversation(conv.address) }
             )
             binding.recycler.layoutManager = LinearLayoutManager(this)
@@ -258,10 +311,23 @@ class ConversationActivity : BaseActivity() {
 
         binding.sendButton.setOnClickListener { send() }
         intent.getStringExtra("prefill")?.let { binding.input.setText(it) }
-        // Restore any unsent draft for this conversation.
-        if (binding.input.text.isNullOrEmpty() && address.isNotEmpty()) {
-            binding.input.setText(SecureStore(this).getDraft(address))
-            binding.input.setSelection(binding.input.text?.length ?: 0)
+        // Restore any unsent draft for this conversation. The draft is stored ciphered,
+        // and the first decryption of a process touches the hardware keystore - which can
+        // hold the screen for hundreds of milliseconds right when the chat is opened. It
+        // is read on the worker and painted when it answers, only if nothing was typed.
+        if (address.isNotEmpty()) {
+            val forDraft = address
+            val app = applicationContext
+            runIo {
+                val draft = runCatching { SecureStore(app).getDraft(forDraft) }.getOrNull()
+                runOnUiThread {
+                    if (isFinishing || address != forDraft) return@runOnUiThread
+                    if (binding.input.text.isNullOrEmpty() && !draft.isNullOrEmpty()) {
+                        binding.input.setText(draft)
+                        binding.input.setSelection(binding.input.text?.length ?: 0)
+                    }
+                }
+            }
         }
 
         // If opened from a decoy notification, drop its fake text into the cover
@@ -269,7 +335,16 @@ class ConversationActivity : BaseActivity() {
         val decoyText = intent.getStringExtra("decoy_fake_text")
         val decoyTime = intent.getLongExtra("decoy_fake_time", 0L)
         if (!decoyText.isNullOrBlank() && decoyTime > 0 && address.isNotEmpty()) {
-            repo.insertDecoyInbox(address, decoyText, decoyTime)
+            // A provider insert on the way in: it belongs on the worker, and its failure
+            // must not take the conversation down with it.
+            val forDecoy = address
+            runIo {
+                try {
+                    repo.insertDecoyInbox(forDecoy, decoyText, decoyTime)
+                } catch (e: Exception) {
+                    android.util.Log.e("ConversationActivity", "decoy insert failed", e)
+                }
+            }
         }
 
         // Opened from the notification's "Reply" button → pop the keyboard.
@@ -398,45 +473,12 @@ class ConversationActivity : BaseActivity() {
     }
 
     /**
-     * Sends [body], splitting it into multiple parts when needed. Long or
-     * Persian (Unicode) messages exceed a single SMS, so a plain sendTextMessage
-     * would silently fail to deliver — divideMessage + multipart fixes that.
+     * The SIM chosen for this screen, or -1 when the phone reports none. Indexed
+     * defensively: a SIM can be pulled out between the badge tap and a send, and an
+     * out-of-range index would crash the screen.
      */
-    private fun sendViaSms(
-        to: String,
-        body: String,
-        sentPi: android.app.PendingIntent?,
-        deliveredPi: android.app.PendingIntent?
-    ) {
-        val sm = smsManager()
-        val parts = sm.divideMessage(body)
-        if (parts.size > 1) {
-            val sentList = ArrayList<android.app.PendingIntent>()
-            val delList = ArrayList<android.app.PendingIntent>()
-            for (i in parts.indices) {
-                sentPi?.let { sentList.add(it) }
-                deliveredPi?.let { delList.add(it) }
-            }
-            sm.sendMultipartTextMessage(
-                to, null, parts,
-                if (sentList.isEmpty()) null else sentList,
-                if (delList.isEmpty()) null else delList
-            )
-        } else {
-            sm.sendTextMessage(to, null, body, sentPi, deliveredPi)
-        }
-    }
-
-    private fun smsManager(): SmsManager {
-        val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val base = getSystemService(SmsManager::class.java)
-            if (subId >= 0) base.createForSubscriptionId(subId) else base
-        } else {
-            @Suppress("DEPRECATION")
-            if (subId >= 0) SmsManager.getSmsManagerForSubscriptionId(subId) else SmsManager.getDefault()
-        }
-    }
+    private fun currentSubId(): Int =
+        sims.getOrNull(simIndex)?.subId ?: -1
 
     private fun showAttachMenu() {
         val options = arrayOf(
@@ -474,7 +516,7 @@ class ConversationActivity : BaseActivity() {
         val (starred, unstarred) = selected.partition { starredDb.isStarred(it.id, isHidden = false) }
 
         val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-            .setMessage("در حال حذف پیام‌ها...")
+            .setMessage(R.string.deleting_messages)
             .setCancelable(false)
             .create()
         dialog.show()
@@ -487,10 +529,14 @@ class ConversationActivity : BaseActivity() {
                 android.util.Log.e("ConversationActivity", "delete failed", e)
             } finally {
                 runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     if (busyDialog === dialog) busyDialog = null
                     try { dialog.dismiss() } catch (_: Exception) {}
                     if (starred.isNotEmpty()) {
-                        Toast.makeText(this, "${starred.size} پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            this, getString(R.string.n_starred_protected, starred.size),
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                     adapter.exitSelection()
                     loadMessages()
@@ -547,27 +593,39 @@ class ConversationActivity : BaseActivity() {
         // Operator / alphanumeric senders have no real number → nothing to manage.
         if (digits.length < 4) return
 
+        val app = applicationContext
+        // A contacts lookup is a provider query: run it on the worker and open the
+        // result once it is back on the UI thread.
+        runIo {
+            val contactUri = runCatching { lookupContactUri(app) }.getOrNull()
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                val intent = contactUri?.let { Intent(Intent.ACTION_VIEW, it) }
+                    ?: Intent(Intent.ACTION_VIEW, android.net.Uri.parse("tel:$digits"))
+                try {
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    // No app to handle it; ignore.
+                }
+            }
+        }
+    }
+
+    private fun lookupContactUri(context: Context): android.net.Uri? {
         val lookupUri = android.net.Uri.withAppendedPath(
             ContactsContract.PhoneLookup.CONTENT_FILTER_URI, android.net.Uri.encode(address)
         )
-        var contactUri: android.net.Uri? = null
-        contentResolver.query(
+        var result: android.net.Uri? = null
+        context.contentResolver.query(
             lookupUri,
             arrayOf(ContactsContract.PhoneLookup._ID, ContactsContract.PhoneLookup.LOOKUP_KEY),
             null, null, null
         )?.use { c ->
             if (c.moveToFirst()) {
-                contactUri = ContactsContract.Contacts.getLookupUri(c.getLong(0), c.getString(1))
+                result = ContactsContract.Contacts.getLookupUri(c.getLong(0), c.getString(1))
             }
         }
-
-        val intent = contactUri?.let { Intent(Intent.ACTION_VIEW, it) }
-            ?: Intent(Intent.ACTION_VIEW, android.net.Uri.parse("tel:$digits"))
-        try {
-            startActivity(intent)
-        } catch (e: Exception) {
-            // No app to handle it; ignore.
-        }
+        return result
     }
 
         private fun showMessageMenu(m: Message) {
@@ -575,7 +633,7 @@ class ConversationActivity : BaseActivity() {
         val isStarredMsg = starredDb.isStarred(m.id, isHidden = false)
         val options = arrayOf(
             getString(R.string.choose),
-            if (isStarredMsg) "حذف ستاره" else "ستاره‌دار کردن (محافظت از حذف)",
+            if (isStarredMsg) getString(R.string.star_remove) else getString(R.string.star_add),
             getString(R.string.copy),
             getString(R.string.forward),
             getString(R.string.delete),
@@ -585,20 +643,27 @@ class ConversationActivity : BaseActivity() {
             when (which) {
                 0 -> adapter.startSelection(m)
                 1 -> {
-                    val newlyStarred = starredDb.toggleStar(
-                        messageId = m.id,
-                        isHidden = false,
-                        threadId = threadId,
-                        address = address,
-                        body = m.body,
-                        date = m.date
-                    )
-                    adapter.notifyDataSetChanged()
-                    Toast.makeText(
-                        this,
-                        if (newlyStarred) "پیام ستاره‌دار شد و به برگزیده‌ها اضافه گردید" else "ستاره پیام برداشته شد",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    // The star row is written to the private database; that stays off the
+                    // UI thread, and only the badge repaint comes back to it.
+                    runIo {
+                        val newlyStarred = starredDb.toggleStar(
+                            messageId = m.id,
+                            isHidden = false,
+                            threadId = threadId,
+                            address = address,
+                            body = m.body,
+                            date = m.date
+                        )
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            adapter.notifyDataSetChanged()
+                            Toast.makeText(
+                                this,
+                                getString(if (newlyStarred) R.string.star_added else R.string.star_removed),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
                 }
                 2 -> copyText(m.body)
                 3 -> startActivity(
@@ -607,10 +672,18 @@ class ConversationActivity : BaseActivity() {
                 )
                 4 -> {
                     if (isStarredMsg) {
-                        Toast.makeText(this, "این پیام ستاره‌دار است و محافظت شده است.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, R.string.starred_protected, Toast.LENGTH_LONG).show()
                     } else {
-                        repo.deleteMessage(m.id)
-                        loadMessages()
+                        runIo {
+                            try {
+                                repo.deleteMessage(m.id)
+                            } catch (e: Exception) {
+                                android.util.Log.e("ConversationActivity", "delete failed", e)
+                            }
+                            runOnUiThread {
+                                if (!isFinishing && !isDestroyed) loadMessages()
+                            }
+                        }
                     }
                 }
                 5 -> showDetails(m)
@@ -634,22 +707,6 @@ class ConversationActivity : BaseActivity() {
             .setMessage(getString(R.string.details_body, m.address, date).toLatinDigits())
             .setPositiveButton(android.R.string.ok, null)
             .show()
-    }
-
-    private fun statusPendingIntent(
-        action: String,
-        uri: android.net.Uri?,
-        partTotal: Int
-    ): android.app.PendingIntent? {
-        if (uri == null) return null
-        val intent = Intent(this, SmsStatusReceiver::class.java)
-            .setAction(action)
-            .setData(uri)
-            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
-        return android.app.PendingIntent.getBroadcast(
-            this, (uri.toString() + action).hashCode(), intent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-        )
     }
 
     /**
@@ -683,7 +740,7 @@ class ConversationActivity : BaseActivity() {
             runOnUiThread {
                 if (isFinishing || threadId != id) return@runOnUiThread
                 adapter.submit(msgs)
-                binding.recycler.scrollToPosition(adapter.itemCount - 1)
+                if (adapter.itemCount > 0) binding.recycler.scrollToPosition(adapter.itemCount - 1)
                 autoSelectSim(msgs)
             }
         }
@@ -709,42 +766,75 @@ class ConversationActivity : BaseActivity() {
         }
     }
 
+    /**
+     * Sending means three slow calls in a row — a provider insert, the radio's
+     * segmentation, and the radio hand-over itself — so it runs on this screen's
+     * worker. The radio throws for a bad number or an unavailable service; that must
+     * end in a queued outbox row, not a crash or a message that looks sent.
+     */
     private fun send() {
         val body = binding.input.text.toString().trim()
         val to = if (address.isNotEmpty()) address
         else (pickedNumber ?: binding.recipient.text.toString()).filter { it.isDigit() || it == '+' }
         if (body.isEmpty() || to.isEmpty()) return
 
-        val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
-        if (subId >= 0) SecureStore(this).setThreadSim(to, subId)
-        val uri = repo.storeSentMessage(to, body, subId)
-        // The status receiver must know how many radio callbacks one visible message
-        // produces, otherwise the first part's report wins over the whole message.
-        val partTotal = smsManager().divideMessage(body).size.coerceAtLeast(1)
-        val sentPi = statusPendingIntent(SmsStatusReceiver.ACTION_SENT, uri, partTotal)
-        val deliveredPi =
-            if (SecureStore(this).deliveryReportForSub(subId))
-                statusPendingIntent(SmsStatusReceiver.ACTION_DELIVERED, uri, partTotal)
-            else null
-        sendViaSms(to, body, sentPi, deliveredPi)
-
+        val subId = currentSubId()
         binding.input.setText("")
-        SecureStore(this).setDraft(to, "")
-        address = to
-        threadId = android.provider.Telephony.Threads.getOrCreateThreadId(this, to)
-        binding.titleName.text =
-            com.privatemsg.app.data.ContactsHelper(this).displayFor(to)
-        binding.titleNumber.text = to
-        binding.recipientRow.visibility = View.GONE
-        // If we sent from the "new message" compose screen, the list still shows the
-        // recipient suggestions — swap it for the real message list so the sent
-        // message actually appears.
-        if (binding.recycler.adapter !== adapter) {
-            binding.recycler.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
-            binding.recycler.adapter = adapter
-            ownActiveNormalizedAddress = SecureStore.normalize(to)
-            activeNormalizedAddress = ownActiveNormalizedAddress
+        binding.sendButton.isEnabled = false
+        val app = applicationContext
+        runIo {
+            val secure = SecureStore(app)
+            if (subId >= 0) secure.setThreadSim(to, subId)
+            val thread = threadIdFor(app, to)
+            val uri = repo.storeSentMessage(to, body, subId)
+            val parts = SmsSender.split(app, subId, body)
+            val sent = SmsSender.send(
+                app, subId, to, parts,
+                uri?.let {
+                    SmsStatusReceiver.statusIntent(app, SmsStatusReceiver.ACTION_SENT, it, parts.size)
+                },
+                uri?.takeIf { secure.deliveryReportForSub(subId) }?.let {
+                    SmsStatusReceiver.statusIntent(
+                        app, SmsStatusReceiver.ACTION_DELIVERED, it, parts.size
+                    )
+                }
+            )
+            if (!sent && uri != null) {
+                // The radio refused it: keep the text queued and visibly unsent instead
+                // of leaving a row that carries a false sent tick.
+                repo.queueFailedSend(uri, to, body, thread, subId)
+            }
+            secure.setDraft(to, "")
+            val name = runCatching { contacts.displayFor(to) }.getOrNull()
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                binding.sendButton.isEnabled = true
+                if (!sent && uri == null) {
+                    // Nothing was stored and nothing was sent: hand the text back so it
+                    // is not silently lost, and leave the draft untouched.
+                    binding.input.setText(body)
+                    Toast.makeText(this, R.string.send_failed, Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                if (!sent) Toast.makeText(this, R.string.send_failed, Toast.LENGTH_LONG).show()
+                address = to
+                if (thread > 0) threadId = thread
+                binding.titleName.text = if (name.isNullOrEmpty()) to else name
+                binding.titleNumber.text = to
+                binding.recipientRow.visibility = View.GONE
+                // If we sent from the "new message" compose screen, the list still shows
+                // the recipient suggestions — swap it for the real message list so the
+                // sent message actually appears.
+                if (binding.recycler.adapter !== adapter) {
+                    binding.recycler.layoutManager =
+                        LinearLayoutManager(this).apply { stackFromEnd = true }
+                    binding.recycler.adapter = adapter
+                }
+                // This chat is now the one on screen: notifications for it must stay
+                // silent, including the ones that arrive before the next onResume.
+                claimActive(threadId, SecureStore.normalize(to))
+                loadMessages()
+            }
         }
-        loadMessages()
     }
 }

@@ -1,21 +1,15 @@
 package com.privatemsg.app.sms
 
-import android.app.PendingIntent
 import android.app.Service
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.IBinder
 import android.provider.Telephony
-import android.telephony.SmsManager
 import com.privatemsg.app.data.HiddenDbHelper
 import com.privatemsg.app.data.NumericCipher
 import com.privatemsg.app.data.SecureStore
 import com.privatemsg.app.data.SimHelper
 import com.privatemsg.app.data.SmsRepository
-import java.util.ArrayList
 import java.util.concurrent.Executors
 
 /**
@@ -56,7 +50,6 @@ class HeadlessSmsSendService : Service() {
             (normalized.isNotBlank() && secure.isHidden(normalized))
         val savedSim = secure.getThreadSim(address)
         val subId = if (savedSim >= 0) savedSim else SimHelper(context).defaultSubId()
-        val manager = smsManagerFor(context, subId)
 
         if (isHidden) {
             // A reply on a hidden line must not leave a trace in the public store: it goes
@@ -67,13 +60,17 @@ class HeadlessSmsSendService : Service() {
             } else {
                 "$body a+"
             }
-            val partTotal = manager.divideMessage(textToSend).size.coerceAtLeast(1)
+            val parts = SmsSender.split(context, subId, textToSend)
             val rowId = hiddenDb.insert(address, textToSend, System.currentTimeMillis(), 4, subId)
-            send(
-                manager, address, textToSend,
-                hiddenIntent(context, SmsStatusReceiver.ACTION_HIDDEN_SENT, rowId, partTotal),
+            SmsSender.send(
+                context, subId, address, parts,
+                SmsStatusReceiver.hiddenStatusIntent(
+                    context, SmsStatusReceiver.ACTION_HIDDEN_SENT, rowId, parts.size
+                ),
                 if (secure.deliveryReportForSub(subId))
-                    hiddenIntent(context, SmsStatusReceiver.ACTION_HIDDEN_DELIVERED, rowId, partTotal)
+                    SmsStatusReceiver.hiddenStatusIntent(
+                        context, SmsStatusReceiver.ACTION_HIDDEN_DELIVERED, rowId, parts.size
+                    )
                 else null
             )
             context.sendBroadcast(
@@ -82,111 +79,29 @@ class HeadlessSmsSendService : Service() {
             return
         }
 
-        val threadId = Telephony.Threads.getOrCreateThreadId(context, address)
-        val uri = SmsRepository(context).storeSentMessage(address, body, subId)
-        val partTotal = manager.divideMessage(body).size.coerceAtLeast(1)
-        val sent = send(
-            manager, address, body,
-            uri?.let { statusIntent(context, SmsStatusReceiver.ACTION_SENT, it, partTotal) },
-            uri?.takeIf { secure.deliveryReportForSub(subId) }
-                ?.let { statusIntent(context, SmsStatusReceiver.ACTION_DELIVERED, it, partTotal) }
+        val threadId = try {
+            Telephony.Threads.getOrCreateThreadId(context, address)
+        } catch (_: Exception) {
+            0L
+        }
+        val repo = SmsRepository(context)
+        val uri = repo.storeSentMessage(address, body, subId)
+        val parts = SmsSender.split(context, subId, body)
+        val sent = SmsSender.send(
+            context, subId, address, parts,
+            uri?.let {
+                SmsStatusReceiver.statusIntent(context, SmsStatusReceiver.ACTION_SENT, it, parts.size)
+            },
+            uri?.takeIf { secure.deliveryReportForSub(subId) }?.let {
+                SmsStatusReceiver.statusIntent(
+                    context, SmsStatusReceiver.ACTION_DELIVERED, it, parts.size
+                )
+            }
         )
         if (sent || uri == null) return
         // The radio refused it: replace the stored "sent" row with a queued outbox entry
         // so the text is kept and visibly pending instead of silently marked as sent.
-        queueForRetry(context, uri, address, body, threadId, subId)
-    }
-
-    /** @return true when the radio accepted the message. */
-    private fun send(
-        manager: SmsManager,
-        address: String,
-        body: String,
-        sentPi: PendingIntent?,
-        deliveredPi: PendingIntent?
-    ): Boolean = try {
-        val parts = manager.divideMessage(body)
-        if (parts.size > 1) {
-            val sentList = ArrayList<PendingIntent>()
-            val delList = ArrayList<PendingIntent>()
-            for (i in parts.indices) {
-                sentPi?.let { sentList.add(it) }
-                deliveredPi?.let { delList.add(it) }
-            }
-            manager.sendMultipartTextMessage(
-                address, null, parts,
-                sentList.ifEmpty { null },
-                delList.ifEmpty { null }
-            )
-        } else {
-            manager.sendTextMessage(address, null, body, sentPi, deliveredPi)
-        }
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun queueForRetry(
-        context: Context,
-        sentUri: Uri,
-        address: String,
-        body: String,
-        threadId: Long,
-        subId: Int
-    ) {
-        try {
-            val values = ContentValues().apply {
-                put(Telephony.Sms.ADDRESS, address)
-                put(Telephony.Sms.BODY, body)
-                put(Telephony.Sms.DATE, System.currentTimeMillis())
-                put(Telephony.Sms.READ, 1)
-                put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_OUTBOX)
-                put(Telephony.Sms.STATUS, Telephony.Sms.STATUS_NONE)
-                if (threadId > 0) put(Telephony.Sms.THREAD_ID, threadId)
-                if (subId >= 0) put(Telephony.Sms.SUBSCRIPTION_ID, subId)
-            }
-            // Remove the optimistic "sent" row first, or the same reply would show twice.
-            context.contentResolver.delete(sentUri, null, null)
-            context.contentResolver.insert(Telephony.Sms.Outbox.CONTENT_URI, values)
-            context.contentResolver.notifyChange(Telephony.Sms.CONTENT_URI, null)
-            context.sendBroadcast(
-                Intent(SmsStatusReceiver.ACTION_SMS_REFRESH).setPackage(context.packageName)
-            )
-        } catch (_: Exception) {
-            // The stored row simply stays marked unsent.
-        }
-    }
-
-    private fun statusIntent(context: Context, action: String, uri: Uri, partTotal: Int): PendingIntent {
-        val intent = Intent(context, SmsStatusReceiver::class.java)
-            .setAction(action)
-            .setData(uri)
-            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
-        return PendingIntent.getBroadcast(
-            context, uri.toString().hashCode() and 0x7FFFFFFF, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    private fun hiddenIntent(context: Context, action: String, rowId: Long, partTotal: Int): PendingIntent {
-        val intent = Intent(context, SmsStatusReceiver::class.java)
-            .setAction(action)
-            .putExtra(SmsStatusReceiver.EXTRA_HIDDEN_ID, rowId)
-            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
-        return PendingIntent.getBroadcast(
-            context, rowId.toInt(), intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    private fun smsManagerFor(context: Context, subId: Int): SmsManager {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val base = context.getSystemService(SmsManager::class.java)
-            if (subId >= 0) base.createForSubscriptionId(subId) else base
-        } else {
-            @Suppress("DEPRECATION")
-            if (subId >= 0) SmsManager.getSmsManagerForSubscriptionId(subId) else SmsManager.getDefault()
-        }
+        repo.queueFailedSend(uri, address, body, threadId, subId)
     }
 
     companion object {

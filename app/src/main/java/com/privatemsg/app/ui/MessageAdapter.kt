@@ -25,10 +25,36 @@ class MessageAdapter(
     var selectionMode = false
         private set
 
+    /**
+     * Replaces the list with animated minimal updates.
+     *
+     * A full notifyDataSetChanged rebuilt every bubble on every delivery report: the
+     * whole visible list was re-linkedified and re-measured, which is exactly the work
+     * that stutters on a long chat. DiffUtil updates only the rows that changed, and
+     * rebinds the row after each removal because that row's day separator depends on
+     * its (now different) predecessor.
+     */
     fun submit(list: List<Message>) {
+        val old = ArrayList(items)
+        val newIds = list.map { it.id }.toSet()
+        val removedPositions = ArrayList<Int>()
+        for (i in old.indices) if (old[i].id !in newIds) removedPositions.add(i)
+        val result = androidx.recyclerview.widget.DiffUtil.calculateDiff(
+            object : androidx.recyclerview.widget.DiffUtil.Callback() {
+                override fun getOldListSize() = old.size
+                override fun getNewListSize() = list.size
+                override fun areItemsTheSame(o: Int, n: Int) = old[o].id == list[n].id
+                override fun areContentsTheSame(o: Int, n: Int) = old[o] == list[n]
+            }
+        )
         items.clear()
         items.addAll(list)
-        notifyDataSetChanged()
+        result.dispatchUpdatesTo(this)
+        for (p in removedPositions) {
+            // The row now sitting where the removed one was (and the one after it) may
+            // need a different day separator; index 0 has no predecessor to worry about.
+            if (p in 1..items.lastIndex) notifyItemChanged(p)
+        }
     }
 
     fun startSelection(m: Message) {
@@ -168,11 +194,19 @@ class MessageAdapter(
 
     override fun getItemCount() = items.size
 
-    /** A rounded (18dp) solid-color bubble background, built from the chosen color. */
+    /**
+     * A rounded (18dp) solid-color bubble background, built from the chosen color.
+     * Cached per color: every visible bubble used to allocate a fresh drawable on each
+     * bind, which is garbage the scroll has to pay for over and over.
+     */
+    private val bubbleCache = HashMap<Int, android.graphics.drawable.GradientDrawable>()
+
     private fun bubbleBackground(ctx: android.content.Context, color: Int): android.graphics.drawable.GradientDrawable {
+        bubbleCache[color]?.let { return it }
         val d = android.graphics.drawable.GradientDrawable()
         d.cornerRadius = 18f * ctx.resources.displayMetrics.density
         d.setColor(color)
+        bubbleCache[color] = d
         return d
     }
 

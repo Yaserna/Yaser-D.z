@@ -19,6 +19,7 @@ class FavoritesActivity : BaseActivity() {
 
     private lateinit var binding: ActivityFavoritesBinding
     private lateinit var starredDb: StarredDbHelper
+    private lateinit var contacts: ContactsHelper
     private lateinit var adapter: FavAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,7 +29,8 @@ class FavoritesActivity : BaseActivity() {
         binding.toolbar.setNavigationOnClickListener { finish() }
 
         starredDb = StarredDbHelper.getInstance(this)
-        adapter = FavAdapter(ContactsHelper(this)) { fav -> confirmDelete(fav) }
+        contacts = ContactsHelper(this)
+        adapter = FavAdapter(contacts) { fav -> confirmDelete(fav) }
         binding.recycler.layoutManager = LinearLayoutManager(this)
         binding.recycler.adapter = adapter
     }
@@ -39,18 +41,30 @@ class FavoritesActivity : BaseActivity() {
     }
 
     private fun refresh() {
-        val items = starredDb.getAllFavorites()
-        adapter.submit(items)
-        binding.empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+        runOffUi {
+            val items = starredDb.getAllFavorites()
+            // Names are contact-provider lookups. Asking here, once per row, fills the
+            // helper's cache so the adapter's bind never touches the provider on the
+            // UI thread.
+            items.forEach { contacts.displayFor(it.address) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                adapter.submit(items)
+                binding.empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+            }
+        }
     }
 
     private fun confirmDelete(fav: Favorite) {
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setItems(arrayOf(getString(R.string.delete))) { _, _ ->
-                starredDb.unstar(fav.id, isHidden = false)
-                refresh()
+                runOffUi {
+                    starredDb.unstar(fav.id, isHidden = false)
+                    refresh()
+                }
             }
             .show()
+        trackDialog(dialog)
     }
 
     private class FavAdapter(

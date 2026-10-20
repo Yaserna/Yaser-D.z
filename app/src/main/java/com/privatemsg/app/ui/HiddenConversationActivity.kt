@@ -1,15 +1,12 @@
 package com.privatemsg.app.ui
 
-import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.Build
 import android.os.Bundle
-import android.telephony.SmsManager
 import android.text.format.DateUtils
 import android.view.WindowManager
 import android.widget.Toast
@@ -28,6 +25,7 @@ import com.privatemsg.app.databinding.ActivityConversationBinding
 import com.privatemsg.app.data.NumericCipher
 import com.privatemsg.app.data.SmsRepository
 import com.privatemsg.app.sms.Notifier
+import com.privatemsg.app.sms.SmsSender
 import com.privatemsg.app.sms.SmsStatusReceiver
 
 /** A hidden conversation; messages live only in the private database. */
@@ -118,8 +116,12 @@ class HiddenConversationActivity : BaseActivity() {
             loadMessages()
             // A new message arrived while the chat is open: keep it read and drop its decoy.
             if (resumedNow) {
-                hiddenDb.markRead(address)
-                Notifier.cancelDecoy(this@HiddenConversationActivity, address)
+                val app = applicationContext
+                // A database write plus a notification cancel: never on the broadcast thread.
+                runIo {
+                    runCatching { hiddenDb.markRead(address) }
+                    Notifier.cancelDecoy(app, address)
+                }
             }
         }
     }
@@ -139,7 +141,7 @@ class HiddenConversationActivity : BaseActivity() {
         val isStarredMsg = starredDb.isStarred(m.id, isHidden = true)
         val options = arrayOf(
             getString(R.string.choose),
-            if (isStarredMsg) "حذف ستاره" else "ستاره‌دار کردن (محافظت از حذف)",
+            if (isStarredMsg) getString(R.string.star_remove) else getString(R.string.star_add),
             getString(R.string.copy),
             getString(R.string.delete),
             getString(R.string.details)
@@ -148,21 +150,31 @@ class HiddenConversationActivity : BaseActivity() {
             when (which) {
                 0 -> adapter.startSelection(m)
                 1 -> {
-                    val newlyStarred = starredDb.toggleStar(
-                        messageId = m.id,
-                        isHidden = true,
-                        threadId = 0,
-                        address = m.address,
-                        body = m.body,
-                        date = m.date
-                    )
-                    Toast.makeText(
-                        this,
-                        if (newlyStarred) "این پیام ستاره‌دار شد و از حذف محافظت می‌شود."
-                        else "ستاره حذف شد.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    loadMessages()
+                    val app = applicationContext
+                    runIo {
+                        val newlyStarred = starredDb.toggleStar(
+                            messageId = m.id,
+                            isHidden = true,
+                            threadId = 0,
+                            address = m.address,
+                            body = m.body,
+                            date = m.date
+                        )
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            Toast.makeText(
+                                this,
+                                getString(if (newlyStarred) R.string.star_added else R.string.star_removed),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            loadMessages()
+                        }
+                        // The hidden list is only rebuilt by this screen, so tell the
+                        // other hidden screens (and the favorites list) to re-read too.
+                        app.sendBroadcast(
+                            Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(app.packageName)
+                        )
+                    }
                 }
                 2 -> {
                     val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -172,10 +184,14 @@ class HiddenConversationActivity : BaseActivity() {
                 3 -> {
                     // A starred hidden message is protected exactly like a public one.
                     if (isStarredMsg) {
-                        Toast.makeText(this, "این پیام ستاره‌دار است و محافظت شده است.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, R.string.starred_protected, Toast.LENGTH_LONG).show()
                     } else {
-                        hiddenDb.deleteById(m.id)
-                        loadMessages()
+                        runIo {
+                            hiddenDb.deleteById(m.id)
+                            runOnUiThread {
+                                if (!isFinishing && !isDestroyed) loadMessages()
+                            }
+                        }
                     }
                 }
                 4 -> {
@@ -215,7 +231,10 @@ class HiddenConversationActivity : BaseActivity() {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 loadMessages()
                 if (protectedCount > 0) {
-                    Toast.makeText(this, "$protectedCount پیام ستاره‌دار محافظت شدند.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        this, getString(R.string.n_starred_protected, protectedCount),
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
         }
@@ -237,9 +256,13 @@ class HiddenConversationActivity : BaseActivity() {
         ownActiveNormalizedAddress =
             if (address.isNotEmpty()) SecureStore.normalize(address) else null
         activeNormalizedAddress = ownActiveNormalizedAddress
-        // Opening the conversation clears its unread state and removes its decoy notification.
-        hiddenDb.markRead(address)
-        Notifier.cancelDecoy(this, address)
+        // Opening the conversation clears its unread state and removes its decoy
+        // notification - both disk work, so they go to the worker.
+        val app = applicationContext
+        runIo {
+            runCatching { hiddenDb.markRead(address) }
+            Notifier.cancelDecoy(app, address)
+        }
         updateEncryptToggleUi()
         updateHoneypotToggleUi()
     }
@@ -287,7 +310,7 @@ class HiddenConversationActivity : BaseActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 adapter.submit(displayMsgs)
-                binding.recycler.scrollToPosition(adapter.itemCount - 1)
+                if (adapter.itemCount > 0) binding.recycler.scrollToPosition(adapter.itemCount - 1)
                 autoSelectSim(rawMsgs)
             }
         }
@@ -320,9 +343,26 @@ class HiddenConversationActivity : BaseActivity() {
 
     /** Display name = the app-only alias if set, otherwise the contact/number. */
     private fun updateTitle() {
-        binding.titleName.text =
-            SecureStore(this).hiddenAliasFor(address) ?: ContactsHelper(this).displayFor(address)
-        binding.titleNumber.text = address
+        val app = applicationContext
+        val target = address
+        val alias = SecureStore(app).hiddenAliasFor(target)
+        binding.titleNumber.text = target
+        if (alias != null) {
+            binding.titleName.text = alias
+            return
+        }
+        // The number holds the title while the (slow) contacts lookup runs on the worker.
+        binding.titleName.text = target
+        runIo {
+            val name = runCatching { ContactsHelper(app).displayFor(target) }.getOrNull()
+            runOnUiThread {
+                if (isFinishing || isDestroyed || address != target) return@runOnUiThread
+                // A rename typed while the lookup was running wins over the contact name.
+                if (SecureStore(app).hiddenAliasFor(target) == null && !name.isNullOrEmpty()) {
+                    binding.titleName.text = name
+                }
+            }
+        }
     }
 
     /** Rename the hidden contact for display inside the app only (contacts untouched). */
@@ -349,68 +389,103 @@ class HiddenConversationActivity : BaseActivity() {
             .show()
     }
 
-        private fun sweepPublicMessages(targetAddress: String) {
-        try {
-            val threadId = android.provider.Telephony.Threads.getOrCreateThreadId(this, targetAddress)
-            if (threadId > 0) {
-                val repo = SmsRepository(this)
+        private fun sweepPublicMessages(context: Context, targetAddress: String) {
+            try {
+                val threadId = try {
+                    android.provider.Telephony.Threads.getOrCreateThreadId(context, targetAddress)
+                } catch (_: Exception) {
+                    // No thread can be resolved for this number: there is nothing public
+                    // to sweep, and the hidden write below must still go ahead.
+                    return
+                }
+                if (threadId <= 0) return
+                val repo = SmsRepository(context)
                 val publicMsgs = repo.getMessages(threadId)
-                for (m in publicMsgs) {
-                    hiddenDb.insert(
-                        targetAddress,
-                        m.body,
-                        m.date,
-                        m.type,
-                        m.subId
+                if (publicMsgs.isEmpty()) return
+                val starredDb = StarredDbHelper.getInstance(context)
+                // A starred public row is protected from deletion, so it must not be
+                // copied either: importing it and keeping the original would show the
+                // same message twice in the hidden chat after the next sweep.
+                val (protected, movable) = publicMsgs.partition {
+                    starredDb.isStarred(it.id, isHidden = false)
+                }
+                // insertAllDistinct keeps a partly-finished move from importing a row
+                // that is already in the private table.
+                hiddenDb.insertAllDistinct(movable)
+                // Delete exactly the rows that were moved: deleteThread() refuses a
+                // starred thread, which would leave hidden-number messages in the system
+                // store (and re-import them later as duplicates).
+                if (movable.isNotEmpty()) repo.deleteMessages(movable.map { it.id })
+                if (protected.isNotEmpty()) {
+                    android.util.Log.w(
+                        "HiddenConversation",
+                        "${protected.size} starred public messages left in place for ${SecureStore.normalize(targetAddress)}"
                     )
                 }
-                // Delete exactly the rows we just copied: deleteThread() refuses a
-                // starred thread, which would leave hidden-number messages in the
-                // system store (and re-import them later as duplicates).
-                repo.deleteMessages(publicMsgs.map { it.id })
+            } catch (e: Exception) {
+                android.util.Log.e("HiddenConversation", "public sweep failed", e)
             }
-        } catch (_: Exception) {}
-    }
+        }
 
+    /**
+     * A hidden send is crypto + private-DB + radio work, so none of it may run on the
+     * UI thread; the radio call can also block for seconds and throws when it refuses
+     * the message.
+     */
     private fun send() {
         val body = binding.input.text.toString().trim()
         if (body.isEmpty() || address.isEmpty()) return
 
-        val isEnc = SecureStore(this).isEncryptionEnabled(address)
-        val textToSend = if (isEnc) {
-            NumericCipher.encryptToNumeric(body, fromHidden = true)
-        } else {
-            "$body a+"
-        }
-
-        val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
-        if (subId >= 0) SecureStore(this).setThreadSim(address, subId)
-        val partTotal = smsManager().divideMessage(textToSend).size.coerceAtLeast(1)
-
-        // The public-store sweep and the encrypted inserts are disk + crypto work and
-        // can take seconds on long threads, so the whole write phase runs on the
-        // worker. Only the actual hand-off to the radio happens back on the UI thread.
+        val subId = currentSubId()
+        val target = address
+        binding.input.setText("")
         binding.sendButton.isEnabled = false
-        val queued = runIo {
-            sweepPublicMessages(address)
-            val rowId = hiddenDb.insert(address, textToSend, System.currentTimeMillis(), 4, subId)
-            val deliveredPi =
-                if (SecureStore(this).deliveryReportForSub(subId)) hiddenDeliveryIntent(rowId, partTotal) else null
-            val sentPi = hiddenSentIntent(rowId, partTotal)
+        val app = applicationContext
+        runIo {
+            val secure = SecureStore(app)
+            // Encrypting a long Persian text is a AES/CBC pass over the whole string:
+            // it belongs on the worker, not between two frames.
+            val textToSend = if (secure.isEncryptionEnabled(target)) {
+                NumericCipher.encryptToNumeric(body, fromHidden = true)
+            } else {
+                "$body a+"
+            }
+            if (subId >= 0) secure.setThreadSim(target, subId)
+            sweepPublicMessages(app, target)
+            val rowId =
+                hiddenDb.insert(target, textToSend, System.currentTimeMillis(), 4, subId)
+            val parts = SmsSender.split(app, subId, textToSend)
+            val sent = SmsSender.send(
+                app, subId, target, parts,
+                SmsStatusReceiver.hiddenStatusIntent(
+                    app, SmsStatusReceiver.ACTION_HIDDEN_SENT, rowId, parts.size
+                ),
+                if (secure.deliveryReportForSub(subId))
+                    SmsStatusReceiver.hiddenStatusIntent(
+                        app, SmsStatusReceiver.ACTION_HIDDEN_DELIVERED, rowId, parts.size
+                    )
+                else null
+            )
+            if (!sent) {
+                // The radio refused it: mark the private row failed (the same type the
+                // status callback would write) so it is visibly unsent.
+                hiddenDb.updateType(rowId, android.provider.Telephony.Sms.MESSAGE_TYPE_FAILED)
+                app.sendBroadcast(
+                    Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(app.packageName)
+                )
+            }
             runOnUiThread {
-                binding.sendButton.isEnabled = true
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                binding.input.setText("")
-                SecureStore(this).setDraft(address, "")
-                sendViaSms(address, textToSend, sentPi, deliveredPi)
+                binding.sendButton.isEnabled = true
+                secure.setDraft(target, "")
                 loadMessages()
+                if (!sent) Toast.makeText(this, R.string.send_failed, Toast.LENGTH_LONG).show()
             }
         }
-        if (!queued) {
-            // Screen is gone and the worker is stopped; keep the draft so nothing is lost.
-            SecureStore(this).setDraft(address, body)
-        }
     }
+
+    /** Chosen SIM, read defensively: a SIM can be pulled between a badge tap and a send. */
+    private fun currentSubId(): Int = sims.getOrNull(simIndex)?.subId ?: -1
 
     private fun setupTopBarActions() {
         val actionRow = android.widget.LinearLayout(this).apply {
@@ -487,51 +562,6 @@ class HiddenConversationActivity : BaseActivity() {
         btn.setAlpha(if (isHp) 1.0f else 0.4f)
     }
 
-    /** Delivery report for a hidden message → updates its private-DB row. */
-    private fun hiddenDeliveryIntent(rowId: Long, partTotal: Int): PendingIntent {
-        val intent = Intent(this, SmsStatusReceiver::class.java)
-            .setAction(SmsStatusReceiver.ACTION_HIDDEN_DELIVERED)
-            .putExtra(SmsStatusReceiver.EXTRA_HIDDEN_ID, rowId)
-            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
-        return PendingIntent.getBroadcast(
-            this, rowId.toInt(), intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    /** Send callback for a hidden message: queued → sent (or failed) in the private DB. */
-    private fun hiddenSentIntent(rowId: Long, partTotal: Int): PendingIntent {
-        val intent = Intent(this, SmsStatusReceiver::class.java)
-            .setAction(SmsStatusReceiver.ACTION_HIDDEN_SENT)
-            .putExtra(SmsStatusReceiver.EXTRA_HIDDEN_ID, rowId)
-            .putExtra(SmsStatusReceiver.EXTRA_PART_TOTAL, partTotal)
-        return PendingIntent.getBroadcast(
-            this, rowId.toInt(), intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    /** Splits long/Unicode messages into multiple parts so they actually deliver. */
-    private fun sendViaSms(to: String, body: String, sentPi: PendingIntent?, deliveredPi: PendingIntent?) {
-        val sm = smsManager()
-        val parts = sm.divideMessage(body)
-        if (parts.size > 1) {
-            val sentList = ArrayList<PendingIntent>()
-            val delList = ArrayList<PendingIntent>()
-            for (i in parts.indices) {
-                sentPi?.let { sentList.add(it) }
-                deliveredPi?.let { delList.add(it) }
-            }
-            sm.sendMultipartTextMessage(
-                to, null, parts,
-                if (sentList.isEmpty()) null else sentList,
-                if (delList.isEmpty()) null else delList
-            )
-        } else {
-            sm.sendTextMessage(to, null, body, sentPi, deliveredPi)
-        }
-    }
-
     private fun setupSim() {
         val helper = SimHelper(this)
         sims = helper.sims()
@@ -549,17 +579,6 @@ class HiddenConversationActivity : BaseActivity() {
             }
         } else {
             binding.simBadge.visibility = android.view.View.GONE
-        }
-    }
-
-    private fun smsManager(): SmsManager {
-        val subId = if (sims.isNotEmpty()) sims[simIndex].subId else -1
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val base = getSystemService(SmsManager::class.java)
-            if (subId >= 0) base.createForSubscriptionId(subId) else base
-        } else {
-            @Suppress("DEPRECATION")
-            if (subId >= 0) SmsManager.getSmsManagerForSubscriptionId(subId) else SmsManager.getDefault()
         }
     }
 

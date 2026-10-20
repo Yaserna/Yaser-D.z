@@ -4,36 +4,50 @@ import android.content.ContentValues
 import android.content.Context
 import android.provider.Telephony
 
-class SmsRepository(private val context: Context) {
+class SmsRepository(context: Context) {
+
+    /**
+     * Only the application context is kept: this repository is handed to worker threads
+     * that can outlive a screen, and holding an Activity would leak it.
+     */
+    private val context = context.applicationContext
 
     private val secure = SecureStore(context)
 
-    /** Normal conversations, excluding any hidden numbers. */
+    /**
+     * Normal conversations, excluding any hidden numbers.
+     *
+     * Two passes, because BODY is the column that makes this query expensive: pass 1 walks
+     * every row with numeric columns only (no text is copied over the binder, so a phone
+     * with tens of thousands of messages scans in tens of milliseconds) and records the id
+     * of each thread's newest row; pass 2 asks for the snippets of just those ids. Reading
+     * every body up front meant the cold-start list had to move the whole message store.
+     */
     fun getConversations(): List<Conversation> {
-        val latest = LinkedHashMap<Long, Conversation>()
+        // thread id -> newest row (its _id for the snippet, address/date/type for the rest)
+        class Newest(var messageId: Long, var address: String, var date: Long, var failed: Boolean)
+        val latest = LinkedHashMap<Long, Newest>()
         val unreadThreads = HashSet<Long>()
         // Compare normalized forms: the stored entries are whatever the user typed
         // ("+98 912 ..." etc.), which never equals the normalized address as-is.
         val hidden = secure.getHiddenNumbers().map { SecureStore.normalize(it) }.toSet()
-        val projection = arrayOf(
-            Telephony.Sms._ID,
-            Telephony.Sms.THREAD_ID,
-            Telephony.Sms.ADDRESS,
-            Telephony.Sms.BODY,
-            Telephony.Sms.DATE,
-            Telephony.Sms.READ,
-            Telephony.Sms.TYPE
-        )
         context.contentResolver.query(
             Telephony.Sms.CONTENT_URI,
-            projection,
+            arrayOf(
+                Telephony.Sms._ID,
+                Telephony.Sms.THREAD_ID,
+                Telephony.Sms.ADDRESS,
+                Telephony.Sms.DATE,
+                Telephony.Sms.READ,
+                Telephony.Sms.TYPE
+            ),
             null,
             null,
             "${Telephony.Sms.DATE} DESC"
         )?.use { c ->
+            val iId = c.getColumnIndexOrThrow(Telephony.Sms._ID)
             val iThread = c.getColumnIndexOrThrow(Telephony.Sms.THREAD_ID)
             val iAddr = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
-            val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
             val iDate = c.getColumnIndexOrThrow(Telephony.Sms.DATE)
             val iRead = c.getColumnIndexOrThrow(Telephony.Sms.READ)
             val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
@@ -48,19 +62,48 @@ class SmsRepository(private val context: Context) {
                 if (latest.containsKey(thread)) continue
                 val address = c.getString(iAddr) ?: ""
                 if (hidden.contains(SecureStore.normalize(address))) continue
-                latest[thread] = Conversation(
-                    threadId = thread,
+                latest[thread] = Newest(
+                    messageId = c.getLong(iId),
                     address = address,
-                    snippet = c.getString(iBody) ?: "",
                     date = c.getLong(iDate),
-                    unread = false, // set below, after the full scan
-                    isMuted = secure.isMuted(address),
                     // The latest message failed to send → flag the conversation.
                     failed = type == Telephony.Sms.MESSAGE_TYPE_FAILED
                 )
             }
         }
-        return latest.values.map { it.copy(unread = it.threadId in unreadThreads) }
+        val snippets = bodiesFor(latest.values.map { it.messageId })
+        return latest.entries.map { (thread, row) ->
+            Conversation(
+                threadId = thread,
+                address = row.address,
+                snippet = snippets[row.messageId].orEmpty(),
+                date = row.date,
+                unread = thread in unreadThreads,
+                isMuted = secure.isMuted(row.address),
+                failed = row.failed
+            )
+        }
+    }
+
+    /** Bodies of the given message rows, keyed by id, fetched in provider-sized chunks. */
+    private fun bodiesFor(ids: List<Long>): Map<Long, String?> {
+        if (ids.isEmpty()) return emptyMap()
+        val out = HashMap<Long, String>(ids.size)
+        ids.chunked(100).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            context.contentResolver.query(
+                Telephony.Sms.CONTENT_URI,
+                arrayOf(Telephony.Sms._ID, Telephony.Sms.BODY),
+                "${Telephony.Sms._ID} IN ($placeholders)",
+                chunk.map { it.toString() }.toTypedArray(),
+                null
+            )?.use { c ->
+                val iId = c.getColumnIndexOrThrow(Telephony.Sms._ID)
+                val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
+                while (c.moveToNext()) out[c.getLong(iId)] = c.getString(iBody) ?: ""
+            }
+        }
+        return out
     }
 
     /** Bodies of the still-unread incoming messages in a thread (oldest → newest). */
@@ -121,9 +164,17 @@ class SmsRepository(private val context: Context) {
 
     /** Stores the sent message and returns its row Uri (for status updates). */
     fun storeSentMessage(address: String, body: String, subId: Int): android.net.Uri? {
-        val threadId = Telephony.Threads.getOrCreateThreadId(context, address)
+        // A number the system cannot turn into a thread (an operator name, a short code)
+        // must not abort the store: the message would vanish before it ever reached the
+        // radio, and the caller's UI callback would never run.
+        val threadId = try {
+            Telephony.Threads.getOrCreateThreadId(context, address)
+        } catch (e: Exception) {
+            android.util.Log.e("SmsRepository", "no thread for this address", e)
+            -1L
+        }
         val values = ContentValues().apply {
-            put(Telephony.Sms.THREAD_ID, threadId)
+            if (threadId > 0) put(Telephony.Sms.THREAD_ID, threadId)
             put(Telephony.Sms.ADDRESS, address)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, System.currentTimeMillis())
@@ -151,14 +202,23 @@ class SmsRepository(private val context: Context) {
             arrayOf(address, date.toString(), body), null
         )?.use { it.count > 0 } ?: false
         if (exists) return
+        val threadId = try {
+            Telephony.Threads.getOrCreateThreadId(context, address)
+        } catch (_: Exception) {
+            0L
+        }
         val values = ContentValues().apply {
             put(Telephony.Sms.ADDRESS, address)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, date)
             put(Telephony.Sms.READ, 0)
             put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_INBOX)
+            // Set explicitly: the screen looks this row up by thread, and a row left
+            // unthreaded by the provider would never appear in that conversation.
+            if (threadId > 0) put(Telephony.Sms.THREAD_ID, threadId)
         }
         context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)
+        context.contentResolver.notifyChange(Telephony.Sms.CONTENT_URI, null)
     }
 
     fun deleteMessage(id: Long) {
@@ -167,17 +227,54 @@ class SmsRepository(private val context: Context) {
         )
     }
 
-    fun deleteMessages(ids: Collection<Long>) {
-        if (ids.isEmpty()) return
+    /**
+     * The radio refused a message that was already stored as "sent": drop that row and
+     * write the same text as a queued outbox entry instead, so it stays readable, looks
+     * visibly pending, and can be retried - instead of carrying a false sent tick.
+     *
+     * @return true when the queued row was written.
+     */
+    fun queueFailedSend(
+        sentUri: android.net.Uri,
+        address: String,
+        body: String,
+        threadId: Long,
+        subId: Int
+    ): Boolean = try {
+        val values = ContentValues().apply {
+            put(Telephony.Sms.ADDRESS, address)
+            put(Telephony.Sms.BODY, body)
+            put(Telephony.Sms.DATE, System.currentTimeMillis())
+            put(Telephony.Sms.READ, 1)
+            put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_OUTBOX)
+            put(Telephony.Sms.STATUS, Telephony.Sms.STATUS_NONE)
+            if (threadId > 0) put(Telephony.Sms.THREAD_ID, threadId)
+            if (subId >= 0) put(Telephony.Sms.SUBSCRIPTION_ID, subId)
+        }
+        // Remove the optimistic "sent" row first, or the same message would show twice.
+        context.contentResolver.delete(sentUri, null, null)
+        context.contentResolver.insert(Telephony.Sms.Outbox.CONTENT_URI, values)
+        context.contentResolver.notifyChange(Telephony.Sms.CONTENT_URI, null)
+        true
+    } catch (e: Exception) {
+        android.util.Log.e("SmsRepository", "could not requeue failed send", e)
+        false
+    }
+
+    /** @return how many rows the provider actually removed (the caller can log a shortfall). */
+    fun deleteMessages(ids: Collection<Long>): Int {
+        if (ids.isEmpty()) return 0
+        var deleted = 0
         ids.chunked(100).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }
             val args = chunk.map { it.toString() }.toTypedArray()
-            context.contentResolver.delete(
+            deleted += context.contentResolver.delete(
                 Telephony.Sms.CONTENT_URI,
                 "${Telephony.Sms._ID} IN ($placeholders)",
                 args
             )
         }
+        return deleted
     }
 
     fun deleteThread(threadId: Long) {
@@ -218,9 +315,17 @@ class SmsRepository(private val context: Context) {
         subId: Int = -1,
         serviceCenter: String = ""
     ): Long {
-        val threadId = Telephony.Threads.getOrCreateThreadId(context, address)
+        // As the default SMS app this row is the only copy the user will ever get, so a
+        // sender the thread lookup cannot resolve (an operator name, a short code) must
+        // not lose the message: it is stored without a thread id instead.
+        val threadId = try {
+            Telephony.Threads.getOrCreateThreadId(context, address)
+        } catch (e: Exception) {
+            android.util.Log.e("SmsRepository", "no thread for this sender", e)
+            -1L
+        }
         val values = ContentValues().apply {
-            put(Telephony.Sms.THREAD_ID, threadId)
+            if (threadId > 0) put(Telephony.Sms.THREAD_ID, threadId)
             put(Telephony.Sms.ADDRESS, address)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, date)
@@ -290,15 +395,15 @@ class SmsRepository(private val context: Context) {
         }
         // Batched inside the helper's own lock: no concurrent writer can join this
         // transaction, and the provider query above already finished before it opened.
-        hiddenDb.insertAll(moved)
+        hiddenDb.insertAllDistinct(moved)
 
-        idsToDelete.chunked(100).forEach { chunk ->
-            val placeholders = chunk.joinToString(",") { "?" }
-            val args = chunk.map { it.toString() }.toTypedArray()
-            context.contentResolver.delete(
-                Telephony.Sms.CONTENT_URI,
-                "${Telephony.Sms._ID} IN ($placeholders)",
-                args
+        val deleted = deleteMessages(idsToDelete)
+        if (deleted < idsToDelete.size) {
+            // Rows left behind are a privacy trace: they surface in the public list until
+            // the next hidden-section visit sweeps them again (the sweep now de-dupes).
+            android.util.Log.w(
+                "SmsRepository",
+                "hide move incomplete: ${idsToDelete.size - deleted} of ${idsToDelete.size} rows still in the system store"
             )
         }
     }
@@ -313,6 +418,7 @@ class SmsRepository(private val context: Context) {
         val hidden = secure.getHiddenNumbers().map { SecureStore.normalize(it) }.toSet()
         if (hidden.isEmpty()) return
         val idsToDelete = mutableListOf<Long>()
+        val moved = mutableListOf<Message>()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
@@ -333,17 +439,23 @@ class SmsRepository(private val context: Context) {
             while (c.moveToNext()) {
                 val addr = c.getString(iAddr) ?: ""
                 if (SecureStore.normalize(addr) !in hidden) continue
-                hiddenDb.insert(
-                    addr,
-                    c.getString(iBody) ?: "",
-                    c.getLong(iDate),
-                    c.getInt(iType),
-                    if (iSub >= 0) c.getInt(iSub) else -1
+                moved.add(
+                    Message(
+                        id = 0,
+                        threadId = 0,
+                        address = addr,
+                        body = c.getString(iBody) ?: "",
+                        date = c.getLong(iDate),
+                        type = c.getInt(iType),
+                        subId = if (iSub >= 0) c.getInt(iSub) else -1
+                    )
                 )
                 idsToDelete.add(c.getLong(iId))
             }
         }
-        // One bulk delete instead of one provider call per row.
+        // One transaction for the whole sweep instead of one provider call per row, and
+        // rows the private DB already holds are not imported a second time.
+        hiddenDb.insertAllDistinct(moved)
         deleteMessages(idsToDelete)
     }
 

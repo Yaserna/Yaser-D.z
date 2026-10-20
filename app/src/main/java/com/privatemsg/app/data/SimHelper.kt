@@ -5,12 +5,16 @@ import android.os.Build
 import android.telephony.SubscriptionManager
 
 /** Lists the active SIM cards so the user can choose which one sends a message. */
-class SimHelper(private val context: Context) {
+class SimHelper(context: Context) {
+
+    // Sends and status callbacks reach this helper from worker threads that can outlive
+    // the screen that created it, so only the application context is kept.
+    private val appContext = context.applicationContext
 
     data class Sim(val subId: Int, val slot: Int)
 
     fun sims(): List<Sim> = try {
-        val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+        val sm = appContext.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
         (sm.activeSubscriptionInfoList ?: emptyList())
             .map { Sim(it.subscriptionId, it.simSlotIndex + 1) }
             .sortedBy { it.slot }

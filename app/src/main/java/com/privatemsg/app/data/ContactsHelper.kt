@@ -5,12 +5,20 @@ import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Handler
+import android.os.Looper
 import android.provider.ContactsContract
 import androidx.core.content.ContextCompat
 import java.util.concurrent.ConcurrentHashMap
 
 /** Resolves a phone number to its saved contact name. */
-class ContactsHelper(private val context: Context) {
+class ContactsHelper(context: Context) {
+
+    /**
+     * Only the application context is kept: instances live in the process-wide caches
+     * below (through the content observer), so holding an Activity here would leak the
+     * whole screen that created it.
+     */
+    private val appContext = context.applicationContext
 
     /** Contact name if known, otherwise the number exactly as it was dialled. */
     fun displayFor(number: String): String {
@@ -41,22 +49,29 @@ class ContactsHelper(private val context: Context) {
 
     /** Contact photo (thumbnail) URI for a number, or null if none/unknown. */
     fun photoUriFor(number: String): String? {
-        if (number.isBlank() || !hasReadAccess()) return null
-        val key = keyFor(number)
-        photoCache[key]?.let { return it.ifEmpty { null } }
-        var uri: String? = null
-        try {
-            uri = photoQuery(number)
-        } catch (e: SecurityException) {
-            // Permission was revoked mid-query; the next call clears through the check.
+        if (number.isBlank()) return null
+        if (!hasReadAccess()) {
+            clearCaches()
             return null
         }
-        if (uri != null) photoCache[key] = uri
+        val key = keyFor(number)
+        // "" is the stored form of "this number has no photo" - without it every list row
+        // would re-query the contacts provider on each bind.
+        photoCache[key]?.let { return it.ifEmpty { null } }
+        val uri = try {
+            photoQuery(number)
+        } catch (e: SecurityException) {
+            // Permission revoked between the check and the query: drop what was cached
+            // under the old grant so no stale photo survives the next bind.
+            clearCaches()
+            return null
+        }
+        photoCache[key] = uri ?: ""
         return uri
     }
 
     private fun hasReadAccess(): Boolean = ContextCompat.checkSelfPermission(
-        context, android.Manifest.permission.READ_CONTACTS
+        appContext, android.Manifest.permission.READ_CONTACTS
     ) == PackageManager.PERMISSION_GRANTED
 
     private fun lookupName(number: String): String? = try {
@@ -70,7 +85,7 @@ class ContactsHelper(private val context: Context) {
             ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
             Uri.encode(number)
         )
-        context.contentResolver.query(
+        appContext.contentResolver.query(
             uri,
             arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME),
             null, null, null
@@ -82,7 +97,7 @@ class ContactsHelper(private val context: Context) {
         val lookup = Uri.withAppendedPath(
             ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number)
         )
-        context.contentResolver.query(
+        appContext.contentResolver.query(
             lookup, arrayOf(ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI), null, null, null
         )?.use { c -> if (c.moveToFirst()) return c.getString(0) }
         return null
@@ -90,27 +105,8 @@ class ContactsHelper(private val context: Context) {
 
     private fun keyFor(number: String): String = SecureStore.normalize(number)
 
-    private val invalidator = object : ContentObserver(Handler()) {
-        override fun onChange(selfChange: Boolean) {
-            val access = hasReadAccess()
-            if (!access || access != lastAccess) {
-                lastAccess = access
-                clearCaches()
-            }
-        }
-    }
-
     init {
-        // One listener per process: any contact edit lands on the contacts Uri, and a
-        // revoked permission already clears everything on the next read - so what this
-        // listener is really for is a name that was edited or added while the app slept.
-        if (!watchInstalled) {
-            watchInstalled = true
-            lastAccess = hasReadAccess()
-            context.applicationContext.contentResolver.registerContentObserver(
-                ContactsContract.Contacts.CONTENT_URI, true, invalidator
-            )
-        }
+        installWatcher(appContext)
     }
 
     companion object {
@@ -118,8 +114,29 @@ class ContactsHelper(private val context: Context) {
         // Keyed by the normalized number, so "0912..." and "+98912..." share one entry.
         private val cache = ConcurrentHashMap<String, String>()
         private val photoCache = ConcurrentHashMap<String, String>()
+
+        @Volatile
         private var watchInstalled = false
-        private var lastAccess = true
+        private val watchLock = Any()
+
+        /** One listener per process; two racing constructors must not install two. */
+        private fun installWatcher(context: Context) {
+            if (watchInstalled) return
+            synchronized(watchLock) {
+                if (watchInstalled) return
+                watchInstalled = true
+                val app = context.applicationContext
+                val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                    override fun onChange(selfChange: Boolean) {
+                        cache.clear()
+                        photoCache.clear()
+                    }
+                }
+                app.contentResolver.registerContentObserver(
+                    ContactsContract.Contacts.CONTENT_URI, true, observer
+                )
+            }
+        }
 
         fun clearCaches() {
             cache.clear()

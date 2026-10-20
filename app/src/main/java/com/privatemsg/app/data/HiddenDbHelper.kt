@@ -177,6 +177,31 @@ class HiddenDbHelper(context: Context) :
         }
     }
 
+    /**
+     * [insertAll] but skipping anything the table already holds for these addresses.
+     * A move from the public store is two steps (copy, then delete) and the delete can
+     * fail halfway; without this guard the next sweep would import the same message a
+     * second time and the chat would show it twice.
+     *
+     * Duplicates are matched on the decrypted date, type and body, which only ever live
+     * in memory here - nothing comparable is written to disk.
+     *
+     * @return the number of rows actually inserted.
+     */
+    @Synchronized
+    fun insertAllDistinct(rows: List<Message>): Int {
+        if (rows.isEmpty()) return 0
+        val known = rows.map { SecureStore.normalize(it.address) }.distinct()
+            .flatMap { getMessages(it) }
+            .map { keyOf(it.date, it.type, it.body) }
+            .toSet()
+        val fresh = rows.filterNot { known.contains(keyOf(it.date, it.type, it.body)) }
+        insertAll(fresh)
+        return fresh.size
+    }
+
+    private fun keyOf(date: Long, type: Int, body: String): String = "$date|$type|$body"
+
     @Synchronized
     fun markRead(address: String) {
         ensureBackfilled()
@@ -272,10 +297,15 @@ class HiddenDbHelper(context: Context) :
         stored?.let { DbCipher.decrypt(appContext, it) } ?: ""
 
     /** A body whose cipher this key can no longer open shows a placeholder, never the ciphertext. */
-    private fun decryptedBody(stored: String?): String =
-        if (stored != null && DbCipher.isUndecryptable(appContext, stored))
+    private fun decryptedBody(stored: String?): String {
+        if (stored == null) return ""
+        // One decrypt only: asking isUndecryptable() first would run the same
+        // AES-GCM decryption twice per row on every list refresh.
+        val plain = DbCipher.decrypt(appContext, stored)
+        return if (plain.isEmpty() && DbCipher.isEncrypted(stored))
             appContext.getString(com.privatemsg.app.R.string.content_unavailable)
-        else decrypted(stored)
+        else plain
+    }
 
     companion object {
         private const val DB_NAME = "hidden.db"
