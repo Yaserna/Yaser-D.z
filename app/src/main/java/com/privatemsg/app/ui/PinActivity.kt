@@ -120,9 +120,8 @@ class PinActivity : BaseActivity() {
     /**
      * Checks [pin] on the worker thread. The key derivation deliberately takes tens of
      * milliseconds to slow guessing down, which is far too long to spend between two
-     * keystrokes on the screen thread. A result that is no longer about the text currently
-     * typed is dropped, and only the confirm tap may report a wrong PIN, so a half-typed
-     * prefix never burns an attempt.
+     * keystrokes on the screen thread. A correct answer always wins, and only the confirm
+     * tap may report a wrong PIN, so a half-typed prefix never burns an attempt.
      */
     private fun verify(pin: String, reportFailure: Boolean) {
         val token = ++checkToken
@@ -130,10 +129,13 @@ class PinActivity : BaseActivity() {
             ioExecutor.execute {
                 val matches = secure.checkPin(pin)
                 runOnUiThread {
-                    if (isFinishing || isDestroyed || token != checkToken) return@runOnUiThread
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    // A correct code is correct however much has been typed since. Dropping
+                    // the answer because a later keystroke bumped the token made a fast
+                    // typist's right code look wrong, then cost an attempt on the OK tap.
                     if (matches) {
                         openHidden()
-                    } else if (reportFailure) {
+                    } else if (reportFailure && token == checkToken) {
                         binding.error.setText(R.string.pin_wrong)
                         entered.clear()
                         updateDots()

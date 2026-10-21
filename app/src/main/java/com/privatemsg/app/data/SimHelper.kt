@@ -1,5 +1,6 @@
 package com.privatemsg.app.data
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
 import android.telephony.SubscriptionManager
@@ -13,6 +14,10 @@ class SimHelper(context: Context) {
 
     data class Sim(val subId: Int, val slot: Int)
 
+    // Reading the subscription list needs READ_PHONE_STATE, which the user can revoke at
+    // any time; the catch below turns that refusal (and a missing telephony service) into
+    // "no SIMs", which every caller already handles.
+    @SuppressLint("MissingPermission")
     fun sims(): List<Sim> = try {
         val sm = appContext.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
         (sm.activeSubscriptionInfoList ?: emptyList())
@@ -22,6 +27,7 @@ class SimHelper(context: Context) {
         emptyList()
     }
 
+    @SuppressLint("MissingPermission")
     fun defaultSubId(): Int = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
             SubscriptionManager.getDefaultSmsSubscriptionId()

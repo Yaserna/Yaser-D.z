@@ -278,9 +278,16 @@ class HiddenActivity : BaseActivity() {
             .setTitle(getString(R.string.unhide))
             .setMessage(getString(R.string.unhide_msg))
             .setPositiveButton(getString(R.string.unhide)) { _, _ ->
-                secure.removeHiddenNumber(address)
                 runAsyncOperation("در حال خروج از مخفی و بازگردانی پیام‌ها...") {
-                    repo.restoreFromHidden(address, hiddenDb)
+                    // Restore first. The number used to leave the hidden list before
+                    // anything was written back, so a refused restore left the messages
+                    // stranded in the private table while the number looked public.
+                    if (!repo.restoreFromHidden(address, hiddenDb)) {
+                        throw IllegalStateException(
+                            "برگرداندن پیام‌ها کامل نشد؛ شماره در بخش مخفی ماند"
+                        )
+                    }
+                    secure.removeHiddenNumber(address)
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)

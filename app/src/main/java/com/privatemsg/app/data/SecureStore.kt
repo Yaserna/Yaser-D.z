@@ -38,7 +38,8 @@ class SecureStore(context: Context) {
     fun checkPin(pin: String): Boolean {
         val salt = prefs.getString(KEY_PIN_SALT, null) ?: return false
         val stored = prefs.getString(KEY_PIN_HASH, null) ?: return false
-        val iterations = prefs.getInt(KEY_PIN_ITERATIONS, 0)
+        // A corrupted preference must not turn one unlock into a multi-second freeze.
+        val iterations = prefs.getInt(KEY_PIN_ITERATIONS, 0).coerceIn(0, MAX_PIN_ITERATIONS)
         val computed = derive(pin.toLatinDigits(), salt, iterations)
         val ok = MessageDigest.isEqual(stored.toByteArray(Charsets.UTF_8), computed.toByteArray(Charsets.UTF_8))
         if (ok && iterations == 0) {
@@ -150,18 +151,18 @@ class SecureStore(context: Context) {
         val out = LinkedHashMap<String, List<String>>()
         for (line in blob.split("\n")) {
             if (line.isBlank()) continue
-            val parts = line.split("\t")
-            if (parts.size < 4) continue
-            out[parts[0]] = listOf(parts[1], parts[2], parts[3])
+            val parts = DecoyCodec.split(line)
+            out[parts[0]] = DecoyCodec.valuesOf(parts) ?: continue
         }
         return out
     }
 
+    /** One blob, every record escaped: a tab or newline in a decoy text cannot split it. */
+    private fun blobOf(entries: Map<String, List<String>>): String =
+        entries.entries.joinToString("\n") { (key, values) -> DecoyCodec.line(key, values) }
+
     private fun writeDecoys(entries: Map<String, List<String>>) {
-        val blob = entries.entries.joinToString("\n") { (key, values) ->
-            "$key\t${values[0]}\t${values[1]}\t${values[2]}"
-        }
-        prefs.edit().putString(KEY_DECOY_BLOB, blob).apply()
+        prefs.edit().putString(KEY_DECOY_BLOB, blobOf(entries)).apply()
     }
 
     private fun ensureDecoyMigration() {
@@ -191,12 +192,7 @@ class SecureStore(context: Context) {
                 // unconditionally would drop the entries of an already-migrated install.
                 val edit = prefs.edit()
                 val merged = LinkedHashMap(readDecoysRaw()).apply { putAll(entries) }
-                edit.putString(
-                    KEY_DECOY_BLOB,
-                    merged.entries.joinToString("\n") { (key, values) ->
-                        "$key\t${values[0]}\t${values[1]}\t${values[2]}"
-                    }
-                )
+                edit.putString(KEY_DECOY_BLOB, blobOf(merged))
                 for (n in legacyNames) {
                     edit.remove("${KEY_DECOY_NAME}_$n")
                         .remove("${KEY_DECOY_TEXT}_$n")
@@ -268,8 +264,13 @@ class SecureStore(context: Context) {
         prefs.getStringSet(KEY_HIDDEN, emptySet()) ?: emptySet()
 
     fun addHiddenNumber(number: String) {
-        val set = getHiddenNumbers().toMutableSet()
-        set.add(number.trim())
+        val clean = number.trim()
+        if (clean.isEmpty()) return
+        // Re-adding the same line in another spelling ("+98 912…", "۰۹۱۲…") must replace
+        // the old entry instead of listing the number twice in the hidden section.
+        val target = normalize(clean)
+        val set = getHiddenNumbers().filterNot { normalize(it) == target }.toMutableSet()
+        set.add(clean)
         writeHiddenNumbers(set)
     }
 
@@ -453,6 +454,33 @@ class SecureStore(context: Context) {
         return next
     }
 
+    /**
+     * Ids of rows the honeypot deliberately wrote into the public store: a message from a
+     * hidden number that arrived without the private wire mark is shown as an ordinary
+     * SMS so an intruder finds a believable chat. The sweep that clears hidden numbers out
+     * of the provider must skip them, or the lure would vanish from the visible app (the
+     * one trace the intruder is meant to keep) and resurface as a real conversation inside
+     * the private section.
+     */
+    fun rememberLure(messageId: Long) {
+        if (messageId <= 0) return
+        val ids = lureIds().toMutableSet()
+        ids.add(messageId)
+        // Only the newest ids matter; an unbounded set would grow for the life of the
+        // install, and a lure is read or deleted within days.
+        val trimmed = ids.sorted().takeLast(LURE_LIMIT).toSet()
+        prefs.edit().putStringSet(KEY_LURE_IDS, trimmed.map { it.toString() }.toSet()).apply()
+    }
+
+    /**
+     * The ids of every lure row, read once. The sweep walks the whole message store and
+     * would otherwise re-read the preferences for every single row it looks at.
+     */
+    fun lureIds(): Set<Long> =
+        (prefs.getStringSet(KEY_LURE_IDS, emptySet()) ?: emptySet())
+            .mapNotNull { it.toLongOrNull() }
+            .toSet()
+
     companion object {
         private const val KEY_PIN_HASH = "pin_hash"
         private const val KEY_PIN_SALT = "pin_salt"
@@ -462,6 +490,9 @@ class SecureStore(context: Context) {
         private const val KEY_PIN_LOCK_BOOT_MS = "pin_lock_boot_ms"
         private const val KEY_PIN_LOCK_BOOT_WRITTEN = "pin_lock_boot_written"
         private const val PIN_ITERATIONS = 20000
+
+        /** Upper bound when reading the stored count back; anything above is corruption. */
+        private const val MAX_PIN_ITERATIONS = 200_000
         private const val PIN_FAIL_LIMIT = 5
         private const val PIN_BASE_WAIT_MS = 30_000L
         private const val KEY_DECOY_NAME = "decoy_name"
@@ -495,6 +526,10 @@ class SecureStore(context: Context) {
         private const val KEY_APP_ICON = "app_icon"
         private const val KEY_HIDDEN_ALIAS = "hidden_alias"
         private const val KEY_MUTED = "muted_thread"
+        private const val KEY_LURE_IDS = "lure_message_ids"
+
+        /** How many lure ids are remembered before the oldest are dropped. */
+        private const val LURE_LIMIT = 200
 
         /** Key names that used to end in the normalized number itself. */
         private val ADDRESS_KEY_PREFIXES = listOf(
@@ -513,22 +548,8 @@ class SecureStore(context: Context) {
         const val DEFAULT_SENT_COLOR = 0xFF1FA055.toInt()
         const val DEFAULT_RECEIVED_COLOR = 0xFF2C2C2E.toInt()
 
-        fun normalize(address: String): String {
-            val latin = address.map { ch ->
-                when (ch) {
-                    in '۰'..'۹' -> ('0'.code + (ch - '۰')).toChar()
-                    in '٠'..'٩' -> ('0'.code + (ch - '٠')).toChar()
-                    else -> ch
-                }
-            }.joinToString("").trim()
-            val digits = latin.filter { it in '0'..'9' }
-            val nonDigitNonSep = latin.count { it !in '0'..'9' && it !in "+-() " }
-            return if (nonDigitNonSep == 0 && digits.length >= 7) {
-                digits.takeLast(10)
-            } else {
-                latin.lowercase()
-            }
-        }
+        /** Kept as the app-wide entry point; the rules themselves live in [PhoneNumbers]. */
+        fun normalize(address: String): String = PhoneNumbers.normalize(address)
 
         private fun newSalt(): String {
             val bytes = ByteArray(16)

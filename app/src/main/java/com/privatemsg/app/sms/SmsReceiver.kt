@@ -54,6 +54,9 @@ class SmsReceiver : BroadcastReceiver() {
                     if (honeypotActive && !isFromSafe) {
                         val repo = SmsRepository(app)
                         val msgId = repo.insertInboxMessage(rawAddress, body, date, subId, serviceCenter)
+                        // This row is the lure the intruder is meant to find. Remember it so
+                        // the hidden-section sweep leaves it in the public store.
+                        secure.rememberLure(msgId)
                         val msgThreadId = threadIdFor(app, rawAddress)
                         val active = ConversationActivity.activeNormalizedAddress
                         val activeThread = ConversationActivity.activeThreadId

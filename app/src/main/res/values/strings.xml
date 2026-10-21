@@ -135,6 +135,7 @@
     <string name="star_add">ستاره‌دار کردن (محافظت از حذف)</string>
     <string name="star_remove">حذف ستاره</string>
     <string name="star_added">پیام ستاره‌دار شد و به برگزیده‌ها اضافه گردید</string>
+    <string name="star_added_hidden">پیام ستاره‌دار شد و از حذف محافظت می‌شود</string>
     <string name="star_removed">ستاره پیام برداشته شد</string>
     <string name="starred_protected">این پیام ستاره‌دار است و محافظت شده است.</string>
     <string name="deleting_messages">در حال حذف پیام‌ها…</string>

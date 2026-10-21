@@ -353,9 +353,14 @@ class SmsRepository(context: Context) {
      * Move every message of [address] from the system store into the private
      * hidden database, then delete them from the system store so the
      * conversation disappears from everywhere outside this app.
+     *
+     * Lure rows are left where they are: the honeypot put them in the public store on
+     * purpose, and moving them into the private table would take the one trace the
+     * intruder is meant to follow away from the screen they are watching.
      */
         fun migrateToHidden(address: String, hiddenDb: HiddenDbHelper) {
         val target = SecureStore.normalize(address)
+        val lures = secure.lureIds()
         val idsToDelete = mutableListOf<Long>()
         val moved = mutableListOf<Message>()
         val projection = arrayOf(
@@ -377,6 +382,10 @@ class SmsRepository(context: Context) {
             val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
             val iSub = c.getColumnIndex(Telephony.Sms.SUBSCRIPTION_ID)
             while (c.moveToNext()) {
+                val rowId = c.getLong(iId)
+                // A lure row belongs in the public store by design (see
+                // SecureStore.rememberLure).
+                if (rowId in lures) continue
                 val addr = c.getString(iAddr) ?: ""
                 if (SecureStore.normalize(addr) != target) continue
                 moved.add(
@@ -417,6 +426,8 @@ class SmsRepository(context: Context) {
     fun purgeHiddenFromProvider(hiddenDb: HiddenDbHelper) {
         val hidden = secure.getHiddenNumbers().map { SecureStore.normalize(it) }.toSet()
         if (hidden.isEmpty()) return
+        // Read the lure ids once: the loop below walks every row in the message store.
+        val lures = secure.lureIds()
         val idsToDelete = mutableListOf<Long>()
         val moved = mutableListOf<Message>()
         val projection = arrayOf(
@@ -437,6 +448,11 @@ class SmsRepository(context: Context) {
             val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
             val iSub = c.getColumnIndex(Telephony.Sms.SUBSCRIPTION_ID)
             while (c.moveToNext()) {
+                val rowId = c.getLong(iId)
+                // A lure row belongs in the public store by design (see
+                // SecureStore.rememberLure): sweeping it would delete the conversation
+                // an intruder is following and turn it into a private one.
+                if (rowId in lures) continue
                 val addr = c.getString(iAddr) ?: ""
                 if (SecureStore.normalize(addr) !in hidden) continue
                 moved.add(
@@ -459,8 +475,14 @@ class SmsRepository(context: Context) {
         deleteMessages(idsToDelete)
     }
 
-    /** Move a hidden conversation back into the visible system store. */
-                fun restoreFromHidden(address: String, hiddenDb: HiddenDbHelper) {
+    /**
+     * Move a hidden conversation back into the visible system store.
+     *
+     * @return true when every row reached the provider. On false the private rows are
+     *   kept: deleting them after a refused insert would lose messages that were never
+     *   actually restored.
+     */
+    fun restoreFromHidden(address: String, hiddenDb: HiddenDbHelper): Boolean {
         val messages = hiddenDb.getMessages(address)
         val threadId = try {
             Telephony.Threads.getOrCreateThreadId(context, address)
@@ -502,16 +524,63 @@ class SmsRepository(context: Context) {
                 else -> outboxValues.add(values)
             }
         }
-        if (sentValues.isNotEmpty()) {
-            context.contentResolver.bulkInsert(Telephony.Sms.Sent.CONTENT_URI, sentValues.toTypedArray())
+        // A refused insert (row too large, provider busy, a thread that vanished) must
+        // not cost the user the messages: the private rows stay until all of them made it.
+        // The rows are inserted one by one, so the ids that actually landed are known:
+        // a rollback can then remove exactly those, and a retry cannot duplicate them.
+        val landedIds = mutableListOf<Long>()
+        // A provider may answer with a uri whose last segment is not a row id. Such a row
+        // did land, so it has to be removed by its own uri, otherwise it would stay in the
+        // public store next to the private copy that is being kept.
+        val landedUris = mutableListOf<android.net.Uri>()
+        var refused = false
+
+        fun flush(uri: android.net.Uri, rows: List<ContentValues>) {
+            for (row in rows) {
+                val inserted = try {
+                    context.contentResolver.insert(uri, row)
+                } catch (e: Exception) {
+                    android.util.Log.e("SmsRepository", "restore insert failed", e)
+                    null
+                }
+                if (inserted == null) {
+                    refused = true
+                    continue
+                }
+                val id = inserted.lastPathSegment?.toLongOrNull()
+                if (id == null || id <= 0L) {
+                    landedUris.add(inserted)
+                    refused = true
+                } else {
+                    landedIds.add(id)
+                }
+            }
         }
-        if (inboxValues.isNotEmpty()) {
-            context.contentResolver.bulkInsert(Telephony.Sms.Inbox.CONTENT_URI, inboxValues.toTypedArray())
-        }
-        if (outboxValues.isNotEmpty()) {
-            context.contentResolver.bulkInsert(Telephony.Sms.Outbox.CONTENT_URI, outboxValues.toTypedArray())
+        flush(Telephony.Sms.Sent.CONTENT_URI, sentValues)
+        flush(Telephony.Sms.Inbox.CONTENT_URI, inboxValues)
+        flush(Telephony.Sms.Outbox.CONTENT_URI, outboxValues)
+        if (refused) {
+            // Undo the rows that made it, so the conversation is either fully public or
+            // fully private - never half of each.
+            val rolledBack = deleteMessages(landedIds)
+            var rolledBackByUri = 0
+            for (u in landedUris) {
+                try {
+                    context.contentResolver.delete(u, null, null)
+                    rolledBackByUri++
+                } catch (e: Exception) {
+                    android.util.Log.e("SmsRepository", "restore rollback failed", e)
+                }
+            }
+            android.util.Log.w(
+                "SmsRepository",
+                "restore incomplete: rolled back $rolledBack row(s) by id and " +
+                    "$rolledBackByUri by uri"
+            )
+            return false
         }
         hiddenDb.deleteByAddress(address)
+        return true
     }
 }
 

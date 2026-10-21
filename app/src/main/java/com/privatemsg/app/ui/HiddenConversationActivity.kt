@@ -164,7 +164,13 @@ class HiddenConversationActivity : BaseActivity() {
                             if (isFinishing || isDestroyed) return@runOnUiThread
                             Toast.makeText(
                                 this,
-                                getString(if (newlyStarred) R.string.star_added else R.string.star_removed),
+                                getString(
+                                    // A hidden star never reaches the favorites screen
+                                    // (that list is public on purpose), so it must not
+                                    // promise the message was added there.
+                                    if (newlyStarred) R.string.star_added_hidden
+                                    else R.string.star_removed
+                                ),
                                 Toast.LENGTH_SHORT
                             ).show()
                             loadMessages()
