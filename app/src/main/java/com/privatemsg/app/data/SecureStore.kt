@@ -303,6 +303,32 @@ class SecureStore(context: Context) {
         return prefs.getStringSet(KEY_PINNED_ADDR, emptySet())?.contains(addrKey(address)) == true
     }
 
+    /**
+     * The two list flags of one address, read together.
+     *
+     * Every one of them used to be asked on its own, and each question hashed the
+     * address again (a SHA-256 per call). Sorting the conversation list asked
+     * two questions per row, so a phone with two hundred chats paid four hundred
+     * hashes before the list could appear. One call, one hash.
+     *
+     * The mute flag is not among them: it is already read once per conversation by
+     * [com.privatemsg.app.data.SmsRepository] and travels on the conversation itself.
+     */
+    fun listFlagsOf(address: String): ListFlags {
+        if (address.isBlank()) return ListFlags()
+        val key = addrKey(address)
+        return ListFlags(
+            pinned = prefs.getStringSet(KEY_PINNED_ADDR, emptySet())?.contains(key) == true,
+            archived = prefs.getStringSet(KEY_ARCHIVED_ADDR, emptySet())?.contains(key) == true
+        )
+    }
+
+    /** The flags a conversation list needs to sort and filter its rows: pinned and archived. */
+    data class ListFlags(
+        val pinned: Boolean = false,
+        val archived: Boolean = false
+    )
+
     fun setPinned(address: String, pinned: Boolean) {
         if (address.isBlank()) return
         val norm = addrKey(address)

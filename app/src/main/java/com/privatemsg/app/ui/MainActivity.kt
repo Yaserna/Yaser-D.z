@@ -109,7 +109,10 @@ class MainActivity : BaseActivity() {
                 startActivity(i)
             },
             onLongClick = { conv -> adapter.startSelection(conv) },
-            onSelectionChanged = { updateSelectionUi() }
+            onSelectionChanged = { updateSelectionUi() },
+            // The contact names arrive after the list is on screen; the search index
+            // is rebuilt with them so a search by name still finds the row.
+            onNamesResolved = { rebuildSearchIndex() }
         )
         binding.recycler.layoutManager = LinearLayoutManager(this)
         binding.recycler.adapter = adapter
@@ -487,6 +490,29 @@ class MainActivity : BaseActivity() {
         adapter.submit(searchIndex.filter { it.second.contains(q) }.map { it.first })
     }
 
+    /**
+     * Rebuilds the search index with the names that have been resolved by now.
+     *
+     * The index is built without the contact names so the list can appear at once,
+     * but a search must still find a contact by name. The names arrive in the
+     * background, so the index is refreshed with them once they are known.
+     */
+    private fun rebuildSearchIndex() {
+        val names = adapter.resolvedNames()
+        if (names.isEmpty()) return
+        val q = binding.searchInput.text?.toString()?.trim()?.lowercase().orEmpty()
+        val index = allConvos.map { conv ->
+            val name = names[conv.address].orEmpty()
+            conv to (name + " " + conv.address + " " + conv.snippet).lowercase()
+        }
+        searchIndex = index
+        // A search that is already typed is applied again, so a name that arrived
+        // late can still make a row show up.
+        if (q.isNotEmpty()) {
+            adapter.submit(index.filter { it.second.contains(q) }.map { it.first })
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         ensureDefaultSmsApp()
@@ -561,14 +587,24 @@ class MainActivity : BaseActivity() {
             }
             everLoaded = true
             // 1) The main list (archived chats excluded) shows immediately.
-            val main = all.filter { !secure.isArchived(it.address) }
-                .sortedByDescending { secure.isPinned(it.address) }
-            // 2) Resolve the contact names on THIS thread, before the list is handed to
-            //    the adapter. Every row bind asks for a name, and an unwarmed cache makes
-            //    the UI thread query the contacts provider once per visible row - the
-            //    screen then looks empty for a beat even though the data was already read.
+            //    The list flags of a row are read in ONE call: asking for "pinned"
+            //    and "archived" separately hashed the address twice per row, so two
+            //    hundred chats paid four hundred hashes before the first row could
+            //    appear. The mute flag is not read here: it comes with the
+            //    conversation itself, so the row shows it without another hash.
+            val flags = HashMap<String, SecureStore.ListFlags>(all.size)
+            all.forEach { flags[it.address] = secure.listFlagsOf(it.address) }
+            val main = all.filter { flags[it.address]?.archived != true }
+                .sortedByDescending { flags[it.address]?.pinned == true }
+            // 2) The names are NOT waited for here. Resolving them needs one query
+            //    to the contacts provider per row, and doing that before the list is
+            //    handed over is what made the screen look empty for seconds on a
+            //    cold start. The list goes up with the numbers it has, and the names
+            //    arrive in the background (step 4) and patch themselves in.
+            //    The index holds the number and the snippet, so a search by number
+            //    works right away; the names are added to it when they arrive.
             val index = main.map {
-                it to (contacts.displayFor(it.address) + " " + it.snippet).lowercase()
+                it to (it.address + " " + it.snippet).lowercase()
             }
             runOnUiThread {
                 if (isFinishing || isDestroyed) { refreshing.set(false); return@runOnUiThread }
@@ -579,7 +615,7 @@ class MainActivity : BaseActivity() {
             }
             // 3) Archived chats are processed AFTER the main list is on screen, so
             //    startup stays light. They only feed the unread badge + archive view.
-            val archived = all.filter { secure.isArchived(it.address) }
+            val archived = all.filter { flags[it.address]?.archived == true }
                 .sortedByDescending { it.date }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread

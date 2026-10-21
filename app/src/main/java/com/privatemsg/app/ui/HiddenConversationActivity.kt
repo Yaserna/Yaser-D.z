@@ -389,6 +389,12 @@ class HiddenConversationActivity : BaseActivity() {
             .setPositiveButton(R.string.save) { _, _ ->
                 SecureStore(this).setHiddenAlias(address, input.text.toString())
                 updateTitle()
+                // The hidden list shows this alias, so it has to be redrawn with the
+                // new name. Without this the list kept the old label until the screen
+                // was visited again.
+                sendBroadcast(
+                    Intent(SmsStatusReceiver.ACTION_HIDDEN_REFRESH).setPackage(packageName)
+                )
                 Toast.makeText(this, R.string.rename_saved, Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(android.R.string.cancel, null)

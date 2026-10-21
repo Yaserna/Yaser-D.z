@@ -115,6 +115,16 @@ class ContactsHelper(context: Context) {
         private val cache = ConcurrentHashMap<String, String>()
         private val photoCache = ConcurrentHashMap<String, String>()
 
+        /**
+         * Bumped whenever the shared caches are dropped, which happens when the
+         * contacts change or the permission is revoked. A list that already tried
+         * and found no name for a number uses this to know it may ask again.
+         */
+        private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /** The current cache generation; a different value means the answers may differ. */
+        fun cacheGeneration(): Int = generation.get()
+
         @Volatile
         private var watchInstalled = false
         private val watchLock = Any()
@@ -130,6 +140,7 @@ class ContactsHelper(context: Context) {
                     override fun onChange(selfChange: Boolean) {
                         cache.clear()
                         photoCache.clear()
+                        generation.incrementAndGet()
                     }
                 }
                 app.contentResolver.registerContentObserver(
@@ -141,6 +152,7 @@ class ContactsHelper(context: Context) {
         fun clearCaches() {
             cache.clear()
             photoCache.clear()
+            generation.incrementAndGet()
         }
     }
 }
